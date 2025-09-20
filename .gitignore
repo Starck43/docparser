@@ -1,0 +1,32 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+*.manifest
+*.spec
+
+# --- Virtual envs ---
+.venv/
+venv/
+ENV/
+env/
+.conda/
+*.env
+*.env.*
+
+# --- IDE ---
+.idea/
+*.iml
+
+# --- Logs / DB ---
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# --- System files ---
+.DS_Store
+

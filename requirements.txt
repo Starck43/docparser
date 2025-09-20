@@ -1,0 +1,7 @@
+pydantic
+sqlmodel
+python-docx
+openpyxl
+PyPDF2
+typer
+pytest
