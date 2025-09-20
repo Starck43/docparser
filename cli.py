@@ -2,10 +2,10 @@ from pathlib import Path
 
 import typer
 
-from app.db import init_db, get_session
+from app.db import init_db, get_db
 from app.export import export_to_console, export_to_xls
 from app.models import Document
-from app.services import parser
+from app.services import utils
 
 cli = typer.Typer()
 
@@ -13,8 +13,8 @@ cli = typer.Typer()
 @cli.command()
 def parse_file(file: Path):
 	"""Распарсить один файл и сохранить в базу"""
-	text = parser.parse_file(file)
-	for session in get_session():
+	text = utils.parse_file(file)
+	for session in get_db():
 		doc = Document(filename=Path(file).name, content_text=text)
 		session.add(doc)
 		session.commit()
@@ -47,14 +47,14 @@ def initdb():
 @cli.command()
 def export_console():
 	"""Вывести все документы в консоль"""
-	for session in get_session():
+	for session in get_db():
 		export_to_console(session)
 
 
 @cli.command()
 def export_xls(output: Path = Path("export.xlsx")):
 	"""Экспортировать документы в XLS"""
-	for session in get_session():
+	for session in get_db():
 		export_to_xls(session, output)
 
 
