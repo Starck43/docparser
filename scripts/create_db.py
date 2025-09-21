@@ -23,8 +23,8 @@ def delete_database():
 
 def confirm_action() -> bool:
     """Запрашивает подтверждение у пользователя."""
-    response = input("\nБудут удалены все существующие данные. Продолжить? [y/N]: ").strip().lower()
-    return response in ('y', 'у', 'Y', 'да')  # Поддержка английской и русской 'y'
+    response = input("\nБудут удалены все существующие данные. Продолжить? [д/н]: ").strip().lower()
+    return response in ('y', 'у', 'да', 'д')  # Поддержка английской и русской 'y'
 
 
 def create_database():

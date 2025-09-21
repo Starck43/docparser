@@ -8,6 +8,7 @@ from pathlib import Path
 from app import crud
 from app.config import settings
 from app.db import init_db, get_db
+from app.export import export_to_xls_with_months
 from app.services.document_parser import DocumentParser
 from app.services.utils import find_documents, get_current_year, extract_tables_from_pdf, \
 	extract_text_from_pdf, print_formatted_table, print_monthly_summary, document_to_document_create
@@ -261,10 +262,37 @@ def step7_documents_with_errors():
 				print(f"   📈 Планов: {len(doc.plans)}")
 
 
-def step8_clear_database():
+def step8_export_to_xls():
+	"""Тестирует создание XLS файла с данными."""
+
+	print("\n" + "=" * 60)
+	print("📋 ШАГ 8: Экспорт данных за указанный год")
+	print("=" * 60)
+
+	# Выбор года
+	year_input = input("Введите год (оставьте пустым для текущего): ").strip()
+
+	try:
+		year = int(year_input) if year_input else get_current_year()
+	except ValueError:
+		print("❌ Неверный формат года")
+		return
+
+	with next(get_db()) as db:
+		# Получаем документы с планами (используем обычный get_documents)
+		documents = crud.get_documents(db, year=year)
+
+		# Вызываем функцию экспорта
+		export_file_path = export_to_xls_with_months(list(documents), year)
+
+		# Проверяем, что файл создался
+		assert export_file_path.exists(), "XLS файл не был создан"
+
+
+def step9_clear_database():
 	"""Очистка базы данных"""
 	print("\n" + "=" * 60)
-	print("🧹 ШАГ 8: Очистка базы данных (с выбором года)")
+	print("🧹 ШАГ 9: Очистка базы данных (с выбором года)")
 	print("=" * 60)
 
 	print("1. ❌ Удалить ВСЕ документы")
@@ -307,7 +335,8 @@ def main():
 		print("5. 📋 Только просмотр документов")
 		print("6. 🚀 Полный цикл тестирования")
 		print("7. ⁉️ Показать сохраненные документы с ошибками")
-		print("8. 🧹 Очистить базу данных")
+		print("8. 🧾 Экспортировать данные в файл")
+		print("9. 🧹 Очистить базу данных")
 		print("\n0. 👋 Выход")
 
 		choice = input("\nВаш выбор (1-9): ").strip()
@@ -330,8 +359,10 @@ def main():
 			step6_all_steps()
 		elif choice == "7":
 			step7_documents_with_errors()
-		elif choice == "8":
-			step8_clear_database()
+		elif choice == '8':
+			step8_export_to_xls()
+		elif choice == "9":
+			step9_clear_database()
 		else:
 			print("👋 До свидания!")
 			break

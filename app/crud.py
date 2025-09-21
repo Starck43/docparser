@@ -45,6 +45,34 @@ def get_document_by_file_path(db: Session, file_path: str) -> Optional[models.Do
 	return db.exec(query).first()
 
 
+def get_documents(
+		db: Session,
+		year: Optional[int] = None,
+		skip: int = 0,
+		limit: Optional[int] = None
+) -> Sequence[Document]:
+	"""
+	Получает документы с предзагруженными планами.
+	"""
+	query = select(Document)
+
+	if year is not None:
+		query = query.where(Document.year == year)
+
+	query = query.offset(skip)
+
+	if limit is not None:
+		query = query.limit(limit)
+
+	documents = db.exec(query).all()
+
+	# Загружаем планы для каждого документа
+	for document in documents:
+		db.refresh(document)
+
+	return documents
+
+
 def get_documents_with_plans(
 		db: Session,
 		year: Optional[int] = None,

@@ -6,7 +6,7 @@ class Settings:
     # Настройки путей
     BASE_DIR = Path(__file__).parent.parent
     DATA_DIR = BASE_DIR / "data"
-    OUTPUT_DIR = BASE_DIR / "output"
+    EXPORT_DIR = BASE_DIR / "export"
     DATABASE_URL: str = f"sqlite:///{BASE_DIR}/docparser.db"
     SQL_DEBUG_MODE = False  # при True отображаются SQL запросы в консоли
 
@@ -45,7 +45,7 @@ class Settings:
 
     def __init__(self):
         # Создание директорий, если они не существуют
-        for directory in [self.DATA_DIR, self.OUTPUT_DIR]:
+        for directory in [self.DATA_DIR, self.EXPORT_DIR]:
             directory.mkdir(exist_ok=True)
 
 

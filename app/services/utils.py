@@ -20,7 +20,7 @@ def is_supported(file: Path) -> bool:
 
 
 def ensure_upload_dir() -> None:
-	Path(settings.OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+	Path(settings.EXPORT_DIR).mkdir(parents=True, exist_ok=True)
 
 
 def find_documents(directory: Path) -> Iterator[Path]:
@@ -295,9 +295,44 @@ def print_monthly_summary(document_data: 'DocumentCreate'):
 
 		print_formatted_table(table_data, "СУММАРНЫЕ ПЛАНЫ", max_col_width=8)
 
+
 def get_current_year() -> int:
 	"""
 	Возвращает текущий год.
 	Используется как значение по умолчанию при парсинге.
 	"""
 	return datetime.now().year
+
+
+def get_unique_filename(directory: Path, base_name: str, extension: str = ".xlsx") -> Path:
+	"""
+	Генерирует уникальное имя файла, добавляя индекс если файл уже существует.
+
+	Args:
+		directory: Папка для сохранения
+		base_name: Базовое имя файла (без расширения)
+		extension: Расширение файла (по умолчанию .xlsx)
+
+	Returns:
+		Путь к уникальному файлу
+	"""
+	counter = 1
+	while True:
+		if counter == 1:
+			filename = f"{base_name}{extension}"
+		else:
+			filename = f"{base_name}-{counter:02d}{extension}"
+
+		file_path = directory / filename
+
+		if not file_path.exists():
+			return file_path
+
+		# Предлагаем пользователю выбрать действие
+		choice = input(
+			f"Файл {filename} уже существует. (д - Перезаписать,  другая клавиша - Сохранить под новым именем): "
+		).lower().strip()
+		if choice in ['д', 'да', 'у', 'y', 'yes']:
+			return file_path
+		else:
+			counter += 1
