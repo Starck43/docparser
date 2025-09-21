@@ -15,22 +15,20 @@
 ## Структура проекта
 ```sourcegraph
 docparser/
-├── README.md
-├── requirements.txt
-├── .gitignore
-├── cli.py
-├── scripts/
-│   └── create_db.py
 ├── app/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── db.py
-│   ├── models.py
-│   ├── schemas.py
-│   └── services/
-│       ├── __init__.py
-│       ├── utils.py
-│       └── parser.py
+│   ├── config.py          # Настройки (Settings класс)
+│   ├── db.py             # Инициализация БД
+│   ├── main.py           # CLI с Typer
+│   ├── models.py         # SQLModel модели
+│   ├── services/
+│   │   ├── document_parser.py  # Парсер структурированных данных
+│   │   └── utils.py            # Утилиты (is_supported и др.)
+│   └── utils/
+│       └── file_utils.py       # Работа с файлами
+├── data/                 # Исходные документы
+├── output/               # Обработанные документы
+├── scripts/
+│   └── create_db.py      # Скрипт создания БД
 └── tests/
     └── test_parser.py
 ```

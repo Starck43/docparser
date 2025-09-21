@@ -1,4 +1,5 @@
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
@@ -97,3 +98,11 @@ def parse_file_to_text(path: Path) -> str:
 		return extract_text_from_txt(path_str)
 	except Exception:
 		return ""
+
+
+def get_current_year() -> int:
+	"""
+	Возвращает текущий год.
+	Используется как значение по умолчанию при парсинге.
+	"""
+	return datetime.now().year

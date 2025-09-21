@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from typing import Optional
 
 import typer
 from sqlmodel import Session
@@ -71,17 +73,21 @@ def parse_folder(
 
 @app.command()
 def show_documents(
-		limit: int = typer.Option(settings.CONSOLE_OUTPUT_BATCH_SIZE, help="Количество записей для показа"),
+		year: Optional[int] = typer.Option(None, help="Фильтр по году"),
+		limit: int = typer.Option(settings.CONSOLE_OUTPUT_BATCH_SIZE, help="Количество записей"),
 		skip: int = typer.Option(0, help="Пропустить первые N записей")
 ):
 	"""
-	Показывает обработанные документы из базы данных.
+	Показывает документы с фильтром по году.
 	"""
 	with Session(engine) as db:
-		documents = crud.get_documents_with_plans(db, skip=skip, limit=limit)
+		documents = crud.get_documents_with_plans(db, year=year, skip=skip, limit=limit)
 
 		for doc in documents:
-			typer.echo(f"\n{doc.agreement_number or 'Без номера'}: {doc.customer_name or 'Неизвестный покупатель'}")
+			customers = json.loads(doc.customer_names) if doc.customer_names else []
+			customer_str = " и ".join(customers) if customers else "Неизвестный покупатель"
+			typer.echo(f"\n{doc.agreement_number or 'Без номера'} ({doc.year}): {customer_str}")
+
 			for plan in doc.product_plans:
 				typer.echo(f"  {plan.month:02d}.{plan.year}: {plan.planned_quantity} т - {plan.product_name}")
 
