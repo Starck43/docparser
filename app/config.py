@@ -2,15 +2,15 @@ from pathlib import Path
 
 
 class Settings:
-    DATABASE_URL: str = "sqlite:///./docparser.db"
-    UPLOAD_DIR: str = "uploads"
-    SUPPORTED_FORMATS = [".docx", ".doc", ".pdf", ".txt"]
 
     # Настройки путей
     BASE_DIR = Path(__file__).parent.parent
-    DB_PATH = BASE_DIR / "database.db"
     DATA_DIR = BASE_DIR / "data"
     OUTPUT_DIR = BASE_DIR / "output"
+    DATABASE_URL: str = f"sqlite:///{BASE_DIR}/docparser.db"
+    SQL_DEBUG_MODE = False  # при True отображаются SQL запросы в консоли
+
+    SUPPORTED_FORMATS = [".docx", ".doc", ".pdf", ".txt"]
 
     # Максимальное количество файлов для обработки за один запуск (0 - без ограничений)
     MAX_FILES_TO_PROCESS = 0

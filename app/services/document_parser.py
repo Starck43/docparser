@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 from app.models import DocumentCreate, ProductPlanCreate
-from app.services.utils import parse_file_to_text, get_current_year
+from app.services.utils import get_current_year, extract_tables_from_pdf, extract_text_from_pdf
 
 
 class DocumentParser:
@@ -19,74 +19,77 @@ class DocumentParser:
 		}
 
 	def parse_document(self, file_path: Path) -> Optional[DocumentCreate]:
-		"""
-		Основной метод парсинга с обработкой ошибок и логированием.
-		"""
 		try:
-			text = parse_file_to_text(file_path)
-			if not text or len(text.strip()) < 50:  # Минимальная длина текста
-				print(f"Файл {file_path.name} содержит слишком мало текста или пуст")
+			validation_errors = []
+			plans = []
+
+			# 1. Извлекаем текст
+			text = extract_text_from_pdf(str(file_path))
+			if not text:
 				return None
 
-			# Парсим основные данные по новым правилам
+			# 2. Парсим основные данные
 			agreement_number = self._parse_agreement_number(text)
 			customers = self._parse_customers(text)
 			year_str = self._detect_year(text)
 
-			# Преобразуем год в int если возможно (убираем '*' для преобразования)
 			try:
-				year = int(re.sub(r'\D', '', year_str)[:4])  # Обеспечиваем 4 цифры
-				if year < 2000 or year > 2100:  # Валидация диапазона
+				year = int(re.sub(r'\D', '', year_str)[:4])
+				if year < 2000 or year > 2100:
 					year = get_current_year()
-			except (ValueError, IndexError):
+			except:
 				year = get_current_year()
 
-			if not customers:
-				print(f"Не найдены покупатели в файле {file_path.name}")
+			# 3. Парсим допустимое отклонение с обработкой ошибок
+			allowed_deviation, deviation_errors = self._parse_allowed_deviation(text)
 
-			# Находим все таблицы
-			tables = self._find_all_tables(text)
+			# 4. Извлекаем и парсим таблицы
+			raw_tables = extract_tables_from_pdf(str(file_path))
 
-			# Распределяем таблицы (передаем год как параметр)
-			product_plans = self._assign_tables_to_customers(tables, customers, text, year)
+			for i, table in enumerate(raw_tables):
+				if not table or len(table) < 2:
+					continue
 
-			# Валидация и создание результата
-			validation_errors = []
+				# Определяем покупателя для найденных таблиц с обработкой ошибок
+				customer_name, customer_errors = self._determine_customer_for_table(
+					tables_count=len(raw_tables),
+					table_index=i,
+					customers=customers
+				)
 
-			# Проверяем наличие номера соглашения (учитываем, что теперь всегда возвращается строка)
+				validation_errors.extend(customer_errors)
+
+				table_plans = self._parse_table_data(table, year, customer_name)
+				plans.extend(table_plans)
+
+			# 5. Валидация
 			if agreement_number == "* без номера":
 				validation_errors.append("Не удалось определить номер соглашения")
-
-			if not product_plans:
+			if not plans:
 				validation_errors.append("Не найдены данные о планах поставок")
-
-			# Проверяем год на наличие '*' (означает, что год определен по умолчанию)
 			if isinstance(year_str, str) and year_str.startswith('*'):
 				validation_errors.append("Год определен по умолчанию")
 
-			result = DocumentCreate(
+			# 6. Создаем результат
+			return DocumentCreate(
 				file_path=str(file_path),
 				agreement_number=agreement_number,
-				year=year,
 				customer_names=customers,
+				year=year,
+				allowed_deviation=allowed_deviation,  # ← Теперь здесь!
 				validation_errors=validation_errors,
-				product_plans=product_plans
+				plans=plans
 			)
 
-			return result
-
 		except Exception as e:
-			print(f"Критическая ошибка при парсинге {file_path.name}: {e}")
-			import traceback
-			traceback.print_exc()
-
 			return DocumentCreate(
 				file_path=str(file_path),
 				agreement_number="* ошибка парсинга",
-				year=get_current_year(),
 				customer_names=["* ошибка парсинга"],
-				validation_errors=[f"Критическая ошибка парсинга: {str(e)}"],
-				product_plans=[]
+				year=get_current_year(),
+				allowed_deviation="* 0",
+				validation_errors=[f"Ошибка: {str(e)}"],
+				plans=[]
 			)
 
 	def _parse_customers(self, text: str) -> list[str]:
@@ -144,6 +147,57 @@ class DocumentParser:
 
 		return unique_customers
 
+	def _determine_customer_for_table(
+			self,
+			tables_count: int,
+			table_index: int,
+			customers: list[str]
+	) -> tuple[Optional[str], list[str]]:
+		"""
+		Определяет покупателя для таблицы с обработкой ошибок.
+		"""
+		errors = []
+
+		if tables_count == 1:
+			# Одна таблица - для всех покупателей
+			return None, errors
+
+		# Несколько таблиц - назначаем по порядку
+		customer_idx = min(table_index, len(customers) - 1)
+
+		if customers and customer_idx < len(customers):
+			return customers[customer_idx], errors
+		else:
+			# Неизвестный покупатель
+			customer_name = f"* Покупатель {table_index + 1}"
+			errors.append(f"Неизвестный покупатель для таблицы {table_index + 1}")
+			return customer_name, errors
+		
+	def _parse_tables_to_plans(self, tables: list[list[list[str]]], year: int, customers: list[str]) -> list[
+		ProductPlanCreate]:
+		"""
+		Парсит таблицы и создает планы с группировкой по покупателям.
+		"""
+		plans = []
+
+		for i, table in enumerate(tables):
+			if not table or len(table) < 2:
+				continue
+
+			# Определяем покупателя для этой таблицы
+			if len(tables) == 1:
+				# Если одна таблица - не указываем конкретного покупателя
+				customer_name = None
+			else:
+				# Если несколько таблиц - назначаем по порядку
+				customer_idx = min(i, len(customers) - 1)
+				customer_name = customers[customer_idx] if customers else f"неизвестный покупатель {i + 1}"
+
+			table_plans = self._parse_table_data(table, year, customer_name)
+			plans.extend(table_plans)
+
+		return plans
+
 	def _find_all_tables(self, text: str) -> list[list[list[str]]]:
 		"""
 		Находит все таблицы между пунктами 2. и 3.
@@ -160,108 +214,44 @@ class DocumentParser:
 
 		return tables
 
-	def _assign_tables_to_customers(self, tables: list, customers: list[str], text: str, year: int) -> list[
-		ProductPlanCreate]:
-		"""
-		Распределяет таблицы по покупателям согласно алгоритму с учетом отклонений.
-
-		Args:
-			tables: список найденных таблиц
-			customers: список покупателей
-			text: исходный текст для дополнительного анализа
-			year: год для планов поставок
-		"""
-		plans = []
-		validation_errors = []
-
-		# Алгоритм распределения
-		if not customers:
-			return plans
-
-		if not tables:
-			return plans
-
-		# Парсим отклонения ДО распределения таблиц
-		deviations, deviation_errors = self._parse_allowed_deviations(text, len(tables))
-		validation_errors.extend(deviation_errors)
-
-		# Распределяем таблицы покупателям
-		assigned_tables = {}
-		for i, table in enumerate(tables):
-			customer_idx = min(i, len(customers) - 1)
-			customer_name = customers[customer_idx]
-
-			# Получаем отклонение для этой таблицы (если есть)
-			deviation = deviations[i] if i < len(deviations) else None
-
-			if customer_name not in assigned_tables:
-				assigned_tables[customer_name] = []
-			assigned_tables[customer_name].append((table, deviation))
-
-		# Если покупателей больше чем таблиц - объединяем лишних с последним
-		if len(customers) > len(tables):
-			last_customer = customers[len(tables) - 1]
-			for extra_customer in customers[len(tables):]:
-				# Объединяем имена
-				merged_name = f"{last_customer} и {extra_customer}"
-				if merged_name in assigned_tables:
-					# Переименовываем существующие записи
-					for plan in plans:
-						if plan.customer_name == last_customer:
-							plan.customer_name = merged_name
-					last_customer = merged_name
-
-		# Парсим таблицы и создаем планы с отклонениями
-		for customer_name, table_data in assigned_tables.items():
-			for table, deviation in table_data:
-				table_plans = self._parse_table_data(table, year, customer_name, deviation)
-				plans.extend(table_plans)
-
-		return plans
-
 	def _parse_table_data(
 			self,
 			table: list[list[str]],
 			year: int,
-			customer_name: str,
-			deviation: Optional[str]
+			customer_name: str
 	) -> list[ProductPlanCreate]:
 		"""
-		Парсит данные таблицы с проверкой года.
+		Парсит таблицу и суммирует все значения по месяцам.
 		"""
 		plans = []
 
 		if not table or len(table) < 2:
 			return plans
 
-		product_names = self._extract_product_names(table[0])
-
+		# Обрабатываем строки данных (пропускаем заголовок)
 		for row in table[1:]:
-			if not row:
+			if not row or not any(cell.strip() for cell in row):
 				continue
 
-			# Используем функцию для парсинга даты с проверкой года
-			month, found_year = self._parse_date_with_year(row[0], year)
+			# Парсим месяц из первой колонки
+			month = self._parse_month_from_cell(row[0], year)
 			if month is None:
-				continue  # Пропускаем строки без валидного месяца
+				continue
 
-			# Проверяем соответствие года документа
-			if found_year != year:
-				continue  # Пропускаем строки с несоответствующим годом
-
-			# Обрабатываем числовые колонки
-			quantities = self._process_numeric_columns(row[1:], product_names)
-
-			for product_name, quantity in quantities:
+			# Суммируем все числовые значения в строке
+			total_quantity = 0
+			for quantity_str in row[1:]:
+				quantity = self._parse_quantity(quantity_str)
 				if quantity is not None:
-					plans.append(ProductPlanCreate(
-						product_name=product_name,
-						month=month,
-						year=found_year,
-						planned_quantity=quantity,
-						allowed_deviation=deviation,
-						customer_name=customer_name
-					))
+					total_quantity += quantity
+
+			if total_quantity > 0:
+				plans.append(ProductPlanCreate(
+					month=month,
+					year=year,
+					planned_quantity=total_quantity,
+					customer_name=customer_name,
+				))
 
 		return plans
 
@@ -309,7 +299,7 @@ class DocumentParser:
 				pass
 
 		return None, found_year
-	
+
 	def _process_numeric_columns(self, cells: list[str], product_names: list[str]) -> list[tuple[str, Optional[float]]]:
 		"""
 		Обрабатывает числовые колонки с проверкой условий суммирования.
@@ -479,16 +469,22 @@ class DocumentParser:
 
 		return product_names
 
-	def _parse_month_from_cell(self, cell: str) -> Optional[int]:
+	def _parse_month_from_cell(self, cell: str, year: int) -> Optional[int]:
 		"""
-		Парсит только месяц из ячейки (без учета года).
-		Используется в других местах, где год не важен.
+		Парсит месяц из ячейки с использованием переданного года.
 		"""
 		cell_lower = cell.lower().strip()
 
-		# Формат: Январь, Апрель
+		# Формат: Январь get_current_year(), Апрель 2025г., апрель 2025г.
 		for month_name, month_num in self.month_map.items():
 			if month_name in cell_lower:
+				# Проверяем соответствие года в ячейке и переданного года
+				year_match = re.search(r'20\d{2}\s*г?\.?', cell_lower)
+				if year_match:
+					year_str = re.sub(r'\D', '', year_match.group())
+					cell_year = int(year_str) if year_str else year
+					if cell_year != year:
+						return None  # Год не совпадает - пропускаем
 				return month_num
 
 		# Формат: янв., фев.
@@ -585,61 +581,39 @@ class DocumentParser:
 					return table
 		return None
 
-	def _parse_allowed_deviations(self, text: str, tables_count: int) -> tuple[list[str], list[str]]:
+	def _parse_allowed_deviation(self, text: str)  -> tuple[Optional[str], list[str]]:
 		"""
-		Парсит допустимые отклонения из блока между 4. и 5.
-		Возвращает список отклонений и ошибки валидации.
+		Парсит допустимое отклонение из блока между 4. и 5.
+		Берет последнее число, добавляет % если есть.
+		Возвращает (отклонение, ошибки).
 		"""
 		validation_errors = []
 
 		# Ищем блок между 4. и 5.
 		block_match = re.search(r'4\.(.*?)5\.', text, re.DOTALL | re.IGNORECASE)
 		if not block_match:
-			return [], validation_errors
+			validation_errors.append("Не найдено допустимое отклонение")
+			return "* 0", validation_errors
 
 		search_block = block_match.group(1)
 
-		# Ищем все числа в блоке
-		numbers = []
-		number_pattern = r'\b\d+[\d,.]*\d*\b'
-		matches = re.finditer(number_pattern, search_block)
+		# Ищем все числа с возможными процентами
+		deviation_pattern = r'(\d+)\s*%?'
+		matches = re.findall(deviation_pattern, search_block)
 
-		for match in matches:
-			number_str = match.group()
-			# Проверяем, есть ли после числа символ %
-			next_char = search_block[match.end()] if match.end() < len(search_block) else ''
-			if next_char == '%':
-				number_str += '%'
-			numbers.append(number_str)
+		if not matches:
+			validation_errors.append("Не найдено допустимое отклонение")
+			return "* 0", validation_errors
 
-		if not numbers:
-			return [], validation_errors
+		# Берем последнее число
+		last_number = matches[-1]
 
-		# Распределяем отклонения по таблицам
-		if tables_count == 0:
-			return [], validation_errors
-
-		if len(numbers) == 1:
-			# Одно число на все таблицы
-			deviations = [numbers[0]] * tables_count
-
-		elif len(numbers) == tables_count:
-			# Количество таблиц совпадает с найденным количеством чисел отклонений
-			deviations = numbers
-
-		elif len(numbers) > tables_count:
-			# Числ больше чем таблиц - берем последние numbers
-			deviations = numbers[-tables_count:]
-			# Помечаем звездочкой и добавляем ошибку
-			deviations = [f"* {dev}" for dev in deviations]
-			validation_errors.append("отклонение требует ручной проверки")
-
-		else:  # len(numbers) < tables_count
-			# Числ меньше чем таблиц - повторяем последнее число
-			last_number = numbers[-1]
-			deviations = [last_number] * tables_count
-
-		return deviations, validation_errors
+		# Проверяем, есть ли знак процента после числа
+		percent_match = re.search(r'{}\s*%'.format(re.escape(last_number)), search_block)
+		if percent_match:
+			return f"{last_number}%", validation_errors
+		else:
+			return last_number, validation_errors
 
 
 def parse_document_file(file_path: Path) -> Optional[DocumentCreate]:

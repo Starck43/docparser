@@ -15,11 +15,32 @@ class Document(SQLModel, table=True):
 	file_path: str = Field(unique=True)
 	agreement_number: Optional[str] = Field(index=True)
 	year: int = Field(default_factory=get_current_year)
-	customer_names: Optional[str] = None  # JSON строка со списком покупателей
+	customer_names: Optional[str] = None  # строка со списком покупателей
+	allowed_deviation: Optional[str] = None
 	validation_errors: Optional[str] = None
 	created_at: datetime = Field(default_factory=datetime.now)
 
-	product_plans: list["ProductPlan"] = Relationship(back_populates="document")
+	plans: list["ProductPlan"] = Relationship(back_populates="document")
+
+	def get_plans_summary(self) -> dict[str, list[Optional[float]]]:
+		"""
+		Возвращает сводку планов в виде {customer_name: [янв, фев, ..., дек]}
+		"""
+		summary = {}
+
+		# Сортируем планы по году и месяцу
+		sorted_plans = sorted(self.plans, key=lambda x: (x.year, x.month))
+
+		for plan in sorted_plans:
+			customer_key = plan.customer_name or "all"
+
+			if customer_key not in summary:
+				summary[customer_key] = [None] * 12
+
+			if 1 <= plan.month <= 12 and plan.planned_quantity is not None:
+				summary[customer_key][plan.month - 1] = plan.planned_quantity
+
+		return summary
 
 
 class ProductPlan(SQLModel, table=True):
@@ -27,12 +48,14 @@ class ProductPlan(SQLModel, table=True):
 	month: int
 	year: int
 	planned_quantity: Optional[float]
-	allowed_deviation: Optional[str] = None  # Допустимое отклонение от плана
-	product_name: str
 	customer_name: Optional[str]  # Конкретный покупатель для этого плана
 
 	document_id: int = Field(foreign_key="document.id")
-	document: Document = Relationship(back_populates="product_plans")
+	document: Document = Relationship(back_populates="plans")
+
+	# Сортируем по году и месяцу
+	class Config:
+		arbitrary_types_allowed = True
 
 
 # Pydantic модели
@@ -41,8 +64,9 @@ class DocumentCreate(BaseModel):
 	agreement_number: Optional[str] = None
 	year: int = get_current_year()
 	customer_names: list[str] = []
+	allowed_deviation: Optional[str] = None  # Допустимое отклонение от плана
 	validation_errors: list[str] = []
-	product_plans: list['ProductPlanCreate'] = []
+	plans: list['ProductPlanCreate'] = []
 
 	@field_validator('agreement_number')
 	def clean_agreement_number(cls, v):
@@ -61,10 +85,8 @@ class DocumentCreate(BaseModel):
 
 
 class ProductPlanCreate(BaseModel):
-	product_name: str
 	month: int
 	year: int
 	planned_quantity: Optional[float] = None
-	allowed_deviation: Optional[str] = None
 	customer_name: Optional[str] = None
 

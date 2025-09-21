@@ -2,13 +2,15 @@
 """
 Расширенный тестовый скрипт с пошаговой проверкой парсера
 """
-from pathlib import Path
 import json
-from app.db import init_db, get_db
-from app.services.document_parser import DocumentParser
-from app.services.utils import parse_file_to_text, find_documents, get_current_year
+from pathlib import Path
+
 from app import crud
 from app.config import settings
+from app.db import init_db, get_db
+from app.services.document_parser import DocumentParser
+from app.services.utils import find_documents, get_current_year, extract_tables_from_pdf, \
+	extract_text_from_pdf, print_formatted_table, print_monthly_summary, document_to_document_create
 
 
 def step1_find_files():
@@ -50,9 +52,9 @@ def step1_find_files():
 
 
 def step2_convert_to_text(files):
-	"""Проверка преобразования в текст"""
+	"""Шаг 2: Проверка преобразования в текст и таблицы"""
 	print("\n" + "=" * 60)
-	print("📝 ШАГ 2: Преобразование файлов в текст")
+	print("📝 ШАГ 2: Преобразование файлов в текст и таблицы")
 	print("=" * 60)
 
 	if not files:
@@ -64,24 +66,21 @@ def step2_convert_to_text(files):
 		print("-" * 40)
 
 		try:
-			text = parse_file_to_text(file_path)
+			# 1. Извлекаем текст (без таблиц)
+			text = extract_text_from_pdf(str(file_path))
 			if text:
-				# Показываем первые 500 символов для preview
-				preview = text[:500].replace('\n', ' ')
-				print(f"   Preview:\n{preview}... (укорочено до 500 символов)\n")
+				preview = text[:300].replace('\n', ' ')
+				print(f"   ✅ Текст ({len(text)} символов):")
+				print(f"   Preview: {preview}...")
 
-				# Показываем табличные данные если они есть
-				lines = text.split('\n')
-				table_lines = [
-					line for line in lines if any(char.isdigit() for char in line) and len(line.strip()) > 10
-				]
+			# 2. Извлекаем таблицы отдельно
+			tables = extract_tables_from_pdf(str(file_path))
+			print(f"   📊 Таблиц: {len(tables)}")
 
-				if table_lines:
-					print(f"   📊 Найдено {len(table_lines)} строк с табличными данными:")
-					for table_line in table_lines[:5]:  # Первые 5 строк таблицы
-						print(f"      {table_line.strip()}")
-			else:
-				print("   ❌ Не удалось извлечь текст")
+			# 3. Показываем таблицы с выравниванием
+			for table_idx, table in enumerate(tables, 1):
+				print(f"\n   📋 ТАБЛИЦА {table_idx}:")
+				print_formatted_table(table, f"ТАБЛИЦА {table_idx}", max_col_width=50)
 
 		except Exception as e:
 			print(f"   ❌ Ошибка: {e}")
@@ -92,8 +91,6 @@ def step4_parse_documents(files, with_save=False):
 	print("\n" + "=" * 60)
 	print(f"⚙️  ШАГ {4 if with_save else 3}: Парсинг документов")
 	print("=" * 60)
-
-	init_db()  # Инициализируем БД
 
 	if not files:
 		print("❌ Нет файлов для обработки")
@@ -106,9 +103,6 @@ def step4_parse_documents(files, with_save=False):
 			print(f"\n📄 Файл {i}: {file_path.name}")
 			print("-" * 40)
 
-			if with_save:
-				crud.delete_all_documents(db)
-
 			try:
 				# Парсим документ
 				document_data = parser.parse_document(file_path)
@@ -118,25 +112,29 @@ def step4_parse_documents(files, with_save=False):
 					print(f"   Номер: {document_data.agreement_number}")
 					print(f"   Год: {document_data.year}")
 					print(f"   Покупатели: {document_data.customer_names}")
-					print(f"   Планов: {len(document_data.product_plans)}")
 
-					# Показываем первые 5 планов
-					for plan in document_data.product_plans[:5]:
-						print(f"      {plan.month:02d}.{plan.year}: {plan.planned_quantity}т - {plan.product_name}")
+					# ОТОБРАЖАЕМ СВЯЗАНЫЕ ТАБЛИЦЫ ПЛАНОВ ЗАКУПОК!
+					print_monthly_summary(document_data)
+
+					if document_data.allowed_deviation and document_data.allowed_deviation != "* 0":
+						print(f"   📏 Допустимое отклонение: {document_data.allowed_deviation}")
+					elif document_data.allowed_deviation == "* 0":
+						print(f"   ⚠️  Допустимое отклонение: не указано")
 
 					if document_data.validation_errors:
 						print(f"   ⚠️  Ошибки: {document_data.validation_errors}")
 
-					# Проверяем, не обработан ли уже файл
-					existing = crud.get_document_by_file_path(db, str(file_path))
-					if existing:
-						print(f"   ⏭️  Уже обработан ранее (ID: {existing.id})")
-						continue
-
 					if with_save:
+						# Проверяем, не обработан ли уже файл
+						existing = crud.get_document_by_file_path(db, str(file_path))
+						if existing:
+							print(f"   ⏭️  Уже обработан и сохранен ранее (ID: {existing.id})")
+							continue
+
 						# Сохраняем в БД
 						document = crud.create_document(db, document_data)
 						print(f"   💾 Сохранено в БД с ID: {document.id}")
+
 				else:
 					print("   ❌ Не удалось распарсить документ")
 
@@ -171,13 +169,13 @@ def step5_view_documents():
 		return
 
 	with next(get_db()) as db:
-		# Документы за выбранный год
-		documents = crud.get_documents_with_plans(db, year=year, limit=limit)
+		# Получаем документы с суммированными планами
+		documents_with_plans = crud.get_documents_with_plans(db, year=year, limit=limit)
 
-		print(f"📊 Документов за {year} год: {len(documents)}")
+		print(f"📊 Документов за {year} год: {len(documents_with_plans)}")
 
-		for i, doc in enumerate(documents, 1):
-			print(f"\n📄 Документ {i}: {doc.agreement_number or 'Без номера'}")
+		for i, (doc, customer_plans) in enumerate(documents_with_plans, 1):
+			print(f"\n📄 [{i:03d}]: Дополнительное соглашение {doc.agreement_number or '<без номера>'}")
 			print(f"   ID: {doc.id}")
 			print(f"   Файл: {Path(doc.file_path).name}")
 			print(f"   Год: {doc.year}")
@@ -186,22 +184,13 @@ def step5_view_documents():
 				customers = json.loads(doc.customer_names)
 				print(f"   Покупатели: {', '.join(customers)}")
 
-			if doc.product_plans:
-				print(f"   📈 Планов поставок: {len(doc.product_plans)}")
+			if doc.allowed_deviation and doc.allowed_deviation != "* 0":
+				print(f"   📏 Допустимое отклонение: {doc.allowed_deviation}")
 
-				# Группируем планы по продуктам
-				products = {}
-				for plan in doc.product_plans:
-					if plan.product_name not in products:
-						products[plan.product_name] = []
-					products[plan.product_name].append(plan)
-
-				for product_name, plans in products.items():
-					total = sum(p.planned_quantity for p in plans if p.planned_quantity)
-					# Добавляем информацию об отклонениях
-					deviations = [p.allowed_deviation for p in plans if p.allowed_deviation]
-					deviation_info = f", отклонения: {', '.join(set(deviations))}" if deviations else ""
-					print(f"      {product_name}: {total}т ({len(plans)} месяцев{deviation_info})")
+			if customer_plans:
+				# Конвертируем в DocumentCreate и отображаем таблицу
+				document_data = document_to_document_create(doc, customer_plans)
+				print_monthly_summary(document_data)
 
 			if doc.validation_errors:
 				errors = json.loads(doc.validation_errors)
@@ -257,7 +246,7 @@ def step7_documents_with_errors():
 		print(f"📊 Документов с ошибками {year_desc}: {len(error_docs)}")
 
 		for i, doc in enumerate(error_docs, 1):
-			print(f"\n📄 Документ {i}: {doc.agreement_number or 'Без номера'}")
+			print(f"\n📄 [{i:03d}]: Дополнительное соглашение {doc.agreement_number or '<без номера>'}")
 			print(f"   ID: {doc.id}")
 			print(f"   Файл: {Path(doc.file_path).name}")
 			print(f"   Год: {doc.year}")
@@ -268,8 +257,8 @@ def step7_documents_with_errors():
 				for error in errors:
 					print(f"      - {error}")
 
-			if doc.product_plans:
-				print(f"   📈 Планов: {len(doc.product_plans)}")
+			if doc.plans:
+				print(f"   📈 Планов: {len(doc.plans)}")
 
 
 def step8_clear_database():
@@ -319,7 +308,7 @@ def main():
 		print("6. 🚀 Полный цикл тестирования")
 		print("7. ⁉️ Показать сохраненные документы с ошибками")
 		print("8. 🧹 Очистить базу данных")
-		print("9. 👋 Выход")
+		print("\n0. 👋 Выход")
 
 		choice = input("\nВаш выбор (1-9): ").strip()
 
@@ -343,11 +332,9 @@ def main():
 			step7_documents_with_errors()
 		elif choice == "8":
 			step8_clear_database()
-		elif choice == "9":
+		else:
 			print("👋 До свидания!")
 			break
-		else:
-			print("❌ Неверный выбор, попробуйте снова")
 
 		input("\n⏎ Нажмите Enter чтобы продолжить...")
 

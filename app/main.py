@@ -20,8 +20,8 @@ def _print_document_info(document_data: models.DocumentCreate):
 	if document_data.customer_name:
 		typer.echo(f"   👥 {document_data.customer_name}")
 
-	if document_data.product_plans:
-		typer.echo(f"   📊 Планов: {len(document_data.product_plans)}")
+	if document_data.plans:
+		typer.echo(f"   📊 Планов: {len(document_data.plans)}")
 
 	if document_data.validation_errors:
 		typer.echo(f"   ⚠️  Ошибки: {len(document_data.validation_errors)}")
@@ -88,7 +88,7 @@ def show_documents(
 			customer_str = " и ".join(customers) if customers else "Неизвестный покупатель"
 			typer.echo(f"\n{doc.agreement_number or 'Без номера'} ({doc.year}): {customer_str}")
 
-			for plan in doc.product_plans:
+			for plan in doc.plans:
 				typer.echo(f"  {plan.month:02d}.{plan.year}: {plan.planned_quantity} т - {plan.product_name}")
 
 

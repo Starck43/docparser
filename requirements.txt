@@ -1,7 +1,9 @@
 pydantic
 sqlmodel
+pdfplumber
 python-docx
 openpyxl
-PyPDF2
 typer
 pytest
+
+SQLAlchemy

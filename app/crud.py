@@ -1,20 +1,22 @@
 import json
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Callable, List, Tuple, Dict
 
 from sqlalchemy import Select, ColumnElement
-from sqlmodel import Session, select
+from sqlmodel import Session, select, delete
 
 from . import models
-from .models import Document
+from .models import Document, ProductPlan, DocumentCreate
 
 
-def create_document(db: Session, document_data: models.DocumentCreate) -> models.Document:
+def create_document(db: Session, document_data: 'DocumentCreate') -> Document:
 	"""Создает документ с планами."""
-	db_document = models.Document(
+
+	db_document = Document(
 		file_path=document_data.file_path,
 		agreement_number=document_data.agreement_number,
 		customer_names=json.dumps(document_data.customer_names) if document_data.customer_names else None,
 		year=document_data.year,
+		allowed_deviation=document_data.allowed_deviation,
 		validation_errors=json.dumps(document_data.validation_errors) if document_data.validation_errors else None
 	)
 
@@ -22,8 +24,9 @@ def create_document(db: Session, document_data: models.DocumentCreate) -> models
 	db.commit()
 	db.refresh(db_document)
 
-	for plan_data in document_data.product_plans:
-		db_plan = models.ProductPlan(
+	# Сохраняем планы
+	for plan_data in document_data.plans:
+		db_plan = ProductPlan(
 			**plan_data.model_dump(),
 			document_id=db_document.id
 		)
@@ -47,18 +50,16 @@ def get_documents_with_plans(
 		year: Optional[int] = None,
 		skip: int = 0,
 		limit: Optional[int] = None
-) -> Sequence[Document]:
+) -> list[tuple[Document, dict[str | None, list[None]]]]:
 	"""
-	Получает документы с их планами закупок с фильтром по году.
+	Получает документы с группированными планами по покупателям.
+	Возвращает список кортежей (документ, {покупатель: [месячные_планы]})
 	"""
-	# Базовый запрос
-	query = select(models.Document)
+	query = select(Document)
 
-	# Добавляем фильтр по году если указан
 	if year is not None:
-		query = query.where(models.Document.year == year)
+		query = query.where(Document.year == year)
 
-	# Добавляем пагинацию
 	query = query.offset(skip)
 
 	if limit is not None:
@@ -66,11 +67,28 @@ def get_documents_with_plans(
 
 	documents = db.exec(query).all()
 
-	# Загружаем связанные планы для каждого документа
+	results = []
 	for document in documents:
-		db.refresh(document)
+		db.refresh(document)  # Загружаем связанные планы
 
-	return documents
+		# Группируем планы по покупателям и месяцам
+		customer_plans = {}
+		for plan in document.plans:
+			customer_key = plan.customer_name or "Все покупатели"
+			if customer_key not in customer_plans:
+				customer_plans[customer_key] = [None] * 12
+
+			if 1 <= plan.month <= 12 and plan.planned_quantity is not None:
+				month_index = plan.month - 1
+				# инициализируем и суммируем
+				if customer_plans[customer_key][month_index] is None:
+					customer_plans[customer_key][month_index] = plan.planned_quantity
+				else:
+					customer_plans[customer_key][month_index] += plan.planned_quantity
+
+		results.append((document, customer_plans))
+
+	return results
 
 
 def get_documents_by_year_range(
@@ -111,7 +129,7 @@ def get_documents_with_errors(
 
 	if limit is not None:
 		query = query.limit(limit)
-		
+
 	documents: Sequence[models.Document] = db.exec(query).all()
 
 	# Загружаем связанные с документом планы
@@ -121,13 +139,13 @@ def get_documents_with_errors(
 	return documents
 
 
-def delete_documents_by_year(db: Session, year: Optional[int] = None) -> int:
+def delete_documents_by_year(db: Session, year: Optional[int] = None) -> int | Callable[[], int]:
 	"""
 	Удаляет документы за указанный год (или все если год не указан).
+	Сначала удаляет связанные записи ProductPlan, затем сами документы.
+	Возвращает количество удаленных документов.
 	"""
-	from sqlmodel import select
-
-	# Явно типизируем query
+	# Сначала находим все документы, которые нужно удалить
 	if year is not None:
 		query = select(models.Document).where(models.Document.year == year)
 	else:
@@ -135,9 +153,23 @@ def delete_documents_by_year(db: Session, year: Optional[int] = None) -> int:
 
 	documents_to_delete = db.exec(query).all()
 
-	deleted_count = len(documents_to_delete)
-	for document in documents_to_delete:
-		db.delete(document)
+	if not documents_to_delete:
+		return 0  # Нет документов для удаления
+
+	# Получаем ID документов для удаления
+	document_ids = [doc.id for doc in documents_to_delete]
+
+	# Удаляем связанные записи ProductPlan
+	db.exec(
+		delete(models.ProductPlan)
+		.where(models.ProductPlan.document_id.in_(document_ids))
+	)
+
+	# Удаляем сами документы
+	deleted_count = db.exec(
+		delete(models.Document)
+		.where(models.Document.id.in_(document_ids))
+	).rowcount
 
 	db.commit()
 	return deleted_count
