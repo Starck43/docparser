@@ -15,7 +15,6 @@ ENV/
 env/
 .conda/
 *.env
-*.env.*
 
 # --- IDE ---
 .idea/
@@ -30,3 +29,5 @@ env/
 # --- System files ---
 .DS_Store
 
+export/*
+data/*

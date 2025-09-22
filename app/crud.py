@@ -1,14 +1,13 @@
 import json
-from typing import Optional, Sequence, Callable, List, Tuple, Dict
+from typing import Optional, Sequence, Callable, Type
 
-from sqlalchemy import Select, ColumnElement
+from sqlalchemy import Select, ColumnElement, func
 from sqlmodel import Session, select, delete
 
-from . import models
 from .models import Document, ProductPlan, DocumentCreate
 
 
-def create_document(db: Session, document_data: 'DocumentCreate') -> Document:
+def create_document(db: Session, document_data: 'DocumentCreate') -> 'Document':
 	"""Создает документ с планами."""
 
 	db_document = Document(
@@ -37,11 +36,66 @@ def create_document(db: Session, document_data: 'DocumentCreate') -> Document:
 	return db_document
 
 
-def get_document_by_file_path(db: Session, file_path: str) -> Optional[models.Document]:
+def save_document(db: Session, document_data: DocumentCreate) -> Type['Document'] | 'Document':
+	"""
+	Сохраняет или обновляет документ по file_path.
+	Если документ с таким путем уже существует - обновляет его.
+	Если нет - создает новый.
+	"""
+	# Ищем существующий документ
+	existing_doc = get_document_by_file_path(db, str(document_data.file_path))
+
+	if existing_doc:
+		# Обновляем существующий документ
+		return update_document(db, existing_doc.id, document_data)
+	else:
+		# Создаем новый документ
+		return create_document(db, document_data)
+
+
+def update_document(
+		db: Session,
+		document_id: ColumnElement[int] | int,
+		document_data: 'DocumentCreate'
+) -> Type['Document']:
+	"""
+	Обновляет документ и его планы.
+	"""
+	# Находим документ
+	db_document = db.get(Document, document_id)
+	if not db_document:
+		raise ValueError(f"Документ с ID {document_id} не найден")
+
+	# Обновляем поля документа
+	db_document.agreement_number = document_data.agreement_number
+	db_document.customer_names = json.dumps(document_data.customer_names) if document_data.customer_names else None
+	db_document.year = document_data.year
+	db_document.allowed_deviation = document_data.allowed_deviation
+	db_document.validation_errors = json.dumps(
+		document_data.validation_errors) if document_data.validation_errors else None
+
+	# Удаляем старые планы
+	query = delete(ProductPlan).where(ProductPlan.document_id == document_id)
+	db.exec(query)
+
+	# Добавляем новые планы
+	for plan_data in document_data.plans:
+		db_plan = ProductPlan(
+			**plan_data.model_dump(),
+			document_id=document_id
+		)
+		db.add(db_plan)
+
+	db.commit()
+	db.refresh(db_document)
+	return db_document
+
+
+def get_document_by_file_path(db: Session, file_path: str) -> Optional['Document']:
 	"""
 	Находит документ по пути к файлу.
 	"""
-	query: Select = select(models.Document).where(models.Document.file_path == file_path)
+	query: Select = select(Document).where(Document.file_path == file_path)
 	return db.exec(query).first()
 
 
@@ -119,18 +173,22 @@ def get_documents_with_plans(
 	return results
 
 
+def get_years_in_documents(db:Session):
+	return db.exec(select(Document.year).distinct()).scalar().all()
+
+
 def get_documents_by_year_range(
 		db: Session,
 		start_year: int,
 		end_year: int,
 		limit: Optional[int] = None
-) -> Sequence[models.Document]:
+) -> Sequence['Document']:
 	"""
 	Получает документы за диапазон лет.
 	"""
-	query: Select = select(models.Document).where(
-		models.Document.year >= start_year,
-		models.Document.year <= end_year
+	query: Select = select(Document).where(
+		Document.year >= start_year,
+		Document.year <= end_year
 	)
 
 	if limit is not None:
@@ -139,26 +197,40 @@ def get_documents_by_year_range(
 	return db.exec(query).all()
 
 
+def get_documents_count(
+		db: Session,
+		year: Optional[ColumnElement[int] | int] = None
+) -> int:
+	"""Возвращает количество документов."""
+	query = select(func.count()).select_from(Document)
+
+	if year is not None:
+		query = query.where(Document.year == year)
+
+	result = db.scalar(query)
+	return result if result is not None else 0
+
+
 def get_documents_with_errors(
 		db: Session,
 		year: Optional[ColumnElement[int]] = None,
 		limit: Optional[int] = None
-) -> Sequence[models.Document]:
+) -> Sequence['Document']:
 	"""
 	Получает документы с ошибками валидации.
 	"""
-	query: Select = select(models.Document).where(
-		models.Document.validation_errors is not None
+	query: Select = select(Document).where(
+		Document.validation_errors != None
 	)
 
 	# Добавляем фильтр по году если указан
 	if year is not None:
-		query = query.where(models.Document.year == year)
+		query = query.where(Document.year == year)
 
 	if limit is not None:
 		query = query.limit(limit)
 
-	documents: Sequence[models.Document] = db.exec(query).all()
+	documents: Sequence[Document] = db.exec(query).all()
 
 	# Загружаем связанные с документом планы
 	for document in documents:
@@ -175,9 +247,9 @@ def delete_documents_by_year(db: Session, year: Optional[int] = None) -> int | C
 	"""
 	# Сначала находим все документы, которые нужно удалить
 	if year is not None:
-		query = select(models.Document).where(models.Document.year == year)
+		query = select(Document).where(Document.year == year)
 	else:
-		query = select(models.Document)
+		query = select(Document)
 
 	documents_to_delete = db.exec(query).all()
 
@@ -189,27 +261,37 @@ def delete_documents_by_year(db: Session, year: Optional[int] = None) -> int | C
 
 	# Удаляем связанные записи ProductPlan
 	db.exec(
-		delete(models.ProductPlan)
-		.where(models.ProductPlan.document_id.in_(document_ids))
+		delete(ProductPlan)
+		.where(ProductPlan.document_id.in_(document_ids))
 	)
 
 	# Удаляем сами документы
 	deleted_count = db.exec(
-		delete(models.Document)
-		.where(models.Document.id.in_(document_ids))
+		delete(Document)
+		.where(Document.id.in_(document_ids))
 	).rowcount
 
 	db.commit()
 	return deleted_count
 
 
-def delete_all_documents(db: Session) -> int:
+def delete_all_documents(db: Session) -> Callable[[], int]:
 	"""
 	Удаляет все документы и связанные планы из БД.
 	Возвращает количество удаленных документов.
 	"""
-	deleted_count = db.exec(select(models.Document)).all()
-	for document in deleted_count:
-		db.delete(document)
-	db.commit()
-	return len(deleted_count)
+	try:
+		# Массовое удаление планов (используем execute вместо exec)
+		db.exec(delete(ProductPlan))
+
+		# Массовое удаление документов и получение количества
+		result = db.exec(delete(Document))
+		deleted_count = result.rowcount
+
+		db.commit()
+		return deleted_count
+
+	except Exception as e:
+		db.rollback()
+		print(f"❌ Ошибка удаления документов: {e}")
+		raise

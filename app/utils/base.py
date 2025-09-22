@@ -9,9 +9,10 @@ import docx
 import pdfplumber
 
 from app.config import settings
+from app.utils.cli_utils import confirm_prompt
 
 if TYPE_CHECKING:
-	from app.models import Document
+	from app.models import Document, DocumentCreate
 
 
 def is_supported(file: Path) -> bool:
@@ -38,7 +39,7 @@ def safe_move_file(src: Path, dst: Path) -> Path:
 	dst.parent.mkdir(parents=True, exist_ok=True)
 
 	if dst.exists():
-		if settings.AUTO_RENAME_ON_CONFLICT:
+		if settings.REWRITE_FILE_ON_CONFLICT:
 			counter = 1
 			while dst.exists():
 				new_name = f"{dst.stem}-{counter:02d}{dst.suffix}"
@@ -304,7 +305,13 @@ def get_current_year() -> int:
 	return datetime.now().year
 
 
-def get_unique_filename(directory: Path, base_name: str, extension: str = ".xlsx") -> Path:
+def get_unique_filename(
+		directory: Path,
+		base_name: str,
+		postfix: str = "",
+		extension: str = ".xlsx",
+		force_overwrite: bool = False
+) -> Path:
 	"""
 	Генерирует уникальное имя файла, добавляя индекс если файл уже существует.
 
@@ -312,16 +319,23 @@ def get_unique_filename(directory: Path, base_name: str, extension: str = ".xlsx
 		directory: Папка для сохранения
 		base_name: Базовое имя файла (без расширения)
 		extension: Расширение файла (по умолчанию .xlsx)
+		postfix: Дополнительное окончание к имени файла
+		force_overwrite: Принудительная перезапись существующего файла
 
 	Returns:
 		Путь к уникальному файлу
 	"""
+	# Если force_overwrite=True, просто возвращаем путь без проверок
+	if force_overwrite:
+		filename = f"{base_name}{postfix}{extension}"
+		return directory / filename
+
 	counter = 1
 	while True:
 		if counter == 1:
-			filename = f"{base_name}{extension}"
+			filename = f"{base_name}{postfix}{extension}"
 		else:
-			filename = f"{base_name}-{counter:02d}{extension}"
+			filename = f"{base_name}{postfix}-{counter:02d}{extension}"
 
 		file_path = directory / filename
 
@@ -329,10 +343,10 @@ def get_unique_filename(directory: Path, base_name: str, extension: str = ".xlsx
 			return file_path
 
 		# Предлагаем пользователю выбрать действие
-		choice = input(
-			f"Файл {filename} уже существует. (д - Перезаписать,  другая клавиша - Сохранить под новым именем): "
-		).lower().strip()
-		if choice in ['д', 'да', 'у', 'y', 'yes']:
+		if confirm_prompt(
+				f"Файл {filename} уже существует. Перезаписать?",
+				default=False  # По умолчанию "Нет" для безопасности
+		):
 			return file_path
 		else:
 			counter += 1

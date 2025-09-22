@@ -6,12 +6,14 @@ import json
 from pathlib import Path
 
 from app import crud
-from app.config import settings
 from app.db import init_db, get_db
 from app.export import export_to_xls_with_months
 from app.services.document_parser import DocumentParser
-from app.services.utils import find_documents, get_current_year, extract_tables_from_pdf, \
-	extract_text_from_pdf, print_formatted_table, print_monthly_summary, document_to_document_create
+from app.services.file_service import find_files, display_files_tree
+from app.utils.base import (
+	get_current_year, extract_tables_from_pdf, extract_text_from_pdf, print_formatted_table, print_monthly_summary,
+	document_to_document_create
+)
 
 
 def step1_find_files():
@@ -20,35 +22,8 @@ def step1_find_files():
 	print("🔍 ШАГ 1: Поиск файлов в папке данных")
 	print("=" * 60)
 
-	# Выбор лимита файлов
-	limit_input = input("Лимит файлов для показа (оставьте пустым для всех): ").strip()
-
-	try:
-		file_limit = int(limit_input) if limit_input else None
-	except ValueError:
-		print("❌ Неверный формат числа")
-		return []
-
-	data_dir = settings.DATA_DIR
-	print(f"Папка данных: {data_dir}")
-	print(f"Поддерживаемые форматы: {settings.SUPPORTED_FORMATS}")
-
-	if not data_dir.exists():
-		print("❌ Папка данных не существует!")
-		return []
-
-	files = list(find_documents(data_dir))
-
-	# Применяем лимит
-	if file_limit is not None:
-		files = files[:file_limit]
-		print(f"📁 Найдено файлов (ограничение до: {file_limit}): {len(files)}")
-	else:
-		print(f"📁 Найдено файлов: {len(files)}")
-
-	for i, file_path in enumerate(files, 1):
-		print(f"   {i}. {file_path.name} ({file_path.suffix})")
-
+	files = find_files(limit=5)
+	display_files_tree(files)
 	return files
 
 
@@ -133,7 +108,7 @@ def step4_parse_documents(files, with_save=False):
 							continue
 
 						# Сохраняем в БД
-						document = crud.create_document(db, document_data)
+						document = crud.save_document(db, document_data)
 						print(f"   💾 Сохранено в БД с ID: {document.id}")
 
 				else:
@@ -258,9 +233,6 @@ def step7_documents_with_errors():
 				for error in errors:
 					print(f"      - {error}")
 
-			if doc.plans:
-				print(f"   📈 Планов: {len(doc.plans)}")
-
 
 def step8_export_to_xls():
 	"""Тестирует создание XLS файла с данными."""
@@ -303,15 +275,16 @@ def step9_clear_database():
 
 	with next(get_db()) as db:
 		if choice == "1":
-			deleted = crud.delete_all_documents(db)
-			print(f"🧹 Удалено ВСЕХ документов: {deleted}")
+			from app.crud import delete_all_documents
+			deleted_count = delete_all_documents(db)
+			print(f"✅ Удалено ВСЕХ документов: {deleted_count}")
 
 		elif choice == "2":
-			year_input = input("Введите год для очистки: ").strip()
+			year_input = input("Введите год для удаления: ").strip()
 			try:
 				year = int(year_input)
 				deleted = crud.delete_documents_by_year(db, year=year)
-				print(f"🧹 Удалено документов за {year} год: {deleted}")
+				print(f"✅ Удалено документов за {year} год: {deleted}")
 			except ValueError:
 				print("❌ Неверный формат года")
 

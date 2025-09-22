@@ -6,7 +6,7 @@ from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel, field_validator
 
-from app.services.utils import get_current_year
+from app.utils.base import get_current_year
 
 
 # Таблицы БД

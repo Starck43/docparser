@@ -1,52 +1,56 @@
 from pathlib import Path
+from typing import List
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings:
+class Settings(BaseSettings):
+	model_config = SettingsConfigDict(
+		env_file='.env',
+		env_file_encoding='utf-8',
+		case_sensitive=False,
+		extra='ignore',
+	)
 
-    # Настройки путей
-    BASE_DIR = Path(__file__).parent.parent
-    DATA_DIR = BASE_DIR / "data"
-    EXPORT_DIR = BASE_DIR / "export"
-    DATABASE_URL: str = f"sqlite:///{BASE_DIR}/docparser.db"
-    SQL_DEBUG_MODE = False  # при True отображаются SQL запросы в консоли
+	# Paths
+	BASE_DIR: Path = Field(default_factory=lambda: Path(__file__).parent.parent)
+	DATA_DIR: Path = Field(default_factory=lambda: Path(__file__).parent.parent / "data")
+	EXPORT_DIR: Path = Field(default_factory=lambda: Path(__file__).parent.parent / "export")
 
-    SUPPORTED_FORMATS = [".docx", ".doc", ".pdf", ".txt"]
+	# Database
+	DATABASE_URL: str = "sqlite:///database.db"
+	SQL_DEBUG_MODE: bool = False
 
-    # Максимальное количество файлов для обработки за один запуск (0 - без ограничений)
-    MAX_FILES_TO_PROCESS = 0
+	# File handling
+	SUPPORTED_FORMATS: List[str] = [".docx", ".doc", ".pdf", ".txt"]
+	MAX_FILES_TO_PROCESS: int = 0
+	CONSOLE_OUTPUT_BATCH_SIZE: int = 5
+	REWRITE_FILE_ON_CONFLICT: bool = False
+	MAX_DOCUMENTS_PER_EXPORT_FILE: int = 200
 
-    # Количество строк для отображения в консоли при порционном выводе
-    CONSOLE_OUTPUT_BATCH_SIZE = 10
+	# Parsing
+	EXCLUDE_NAME_LIST: List[str] = []
+	LEGAL_ENTITY_PATTERNS: List[str] = [
+		"ООО", "АО", "ОАО", "ПАО", "ИП",
+		"Общество с ограниченной ответственностью",
+		"Акционерное общество",
+		"Публичное акционерное общество",
+		"Индивидуальный предприниматель"
+	]
 
-    # Настройки сохранения файлов
-    AUTO_RENAME_ON_CONFLICT = True  # Автоматически добавлять индекс (-01, -02) при конфликте имен
+	@classmethod
+	def validate_paths(cls, data):
+		path_fields = ['BASE_DIR', 'DATA_DIR', 'EXPORT_DIR']
+		for field in path_fields:
+			if field in data and isinstance(data[field], str):
+				data[field] = Path(data[field])
+		return data
 
-    # Настройки валидации
-    MAX_CUSTOMER_NAME_LENGTH = 100
-
-    # Новые настройки для парсинга покупателей
-    EXCLUDE_NAME_LIST: list[str] = [
-        "Холдинг Плюс",
-        "«Покупатель»",
-        "«Поставщик»"
-    ]
-
-    LEGAL_ENTITY_PATTERNS: list[str] = [
-        "ООО",
-        "АО",
-        "ОАО",
-        "ПАО",
-        "ИП",
-        "Общество с ограниченной ответственностью",
-        "Акционерное общество",
-        "Публичное акционерное общество",
-        "Индивидуальный предприниматель"
-    ]
-
-    def __init__(self):
-        # Создание директорий, если они не существуют
-        for directory in [self.DATA_DIR, self.EXPORT_DIR]:
-            directory.mkdir(exist_ok=True)
+	def __init__(self, **data):
+		super().__init__(**data)
+		self.DATA_DIR.mkdir(exist_ok=True)
+		self.EXPORT_DIR.mkdir(exist_ok=True)
 
 
 settings = Settings()

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 from app.models import DocumentCreate, ProductPlanCreate
-from app.services.utils import get_current_year, extract_tables_from_pdf, extract_text_from_pdf
+from app.utils.base import get_current_year, extract_tables_from_pdf, extract_text_from_pdf
 
 
 class DocumentParser:

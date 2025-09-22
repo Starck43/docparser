@@ -1,9 +1,11 @@
 pydantic
+pydantic-settings
 sqlmodel
 pdfplumber
 python-docx
 openpyxl
 typer
+rich
 pytest
 
 SQLAlchemy

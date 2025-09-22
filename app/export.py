@@ -1,6 +1,7 @@
 import json
-import pathlib
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side
@@ -8,15 +9,23 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
 from app.config import settings
-from app.models import Document
-from app.services.utils import get_unique_filename
+from app.models import Document, DocumentCreate
+from app.utils.base import get_unique_filename
 
 
-def export_to_xls_with_months(documents: list[Document], year: int) -> pathlib.Path:
+def export_to_xls_with_months(
+		documents: list[Document | DocumentCreate],
+		year: int,
+		export_dir: Optional[Path] = None,
+		postfix: str = "",
+		force_overwrite: bool = False
+) -> Path:
 	"""
 	Экспортирует список документов в XLS файл с детализацией по месяцам.
 	Использует логику как в step5_view_documents.
 	"""
+
+	export_directory = export_dir or settings.EXPORT_DIR
 
 	# Создаем рабочую книгу и лист
 	wb = Workbook()
@@ -80,7 +89,7 @@ def export_to_xls_with_months(documents: list[Document], year: int) -> pathlib.P
 			continue
 
 		# Получаем имя файла безопасным способом
-		file_path_obj = pathlib.Path(doc.file_path) if isinstance(doc.file_path, str) else doc.file_path
+		file_path_obj = Path(doc.file_path) if isinstance(doc.file_path, str) else doc.file_path
 		file_name = file_path_obj.name
 
 		# Обрабатываем customer_names для преобразования к списку из json-формата
@@ -207,12 +216,18 @@ def export_to_xls_with_months(documents: list[Document], year: int) -> pathlib.P
 			bottom=Side(style='medium')
 		)
 
-	# Формируем имя файла и проверяем уникальность
-	timestamp = datetime.now().strftime("%d/%m/%Y")
-	base_filename = f"export_{year}_{timestamp}"
+	# Формируем имя с postfix
+	timestamp = datetime.now().strftime("%d-%m-%Y")
+	base_filename = f"export_{year}_{timestamp}{postfix}"
 
-	# Используем функцию для получения уникального имени файла
-	export_file_path = get_unique_filename(settings.EXPORT_DIR, base_filename, ".xlsx")
+	# Используем функцию для уникального имени
+	export_file_path = get_unique_filename(
+		export_directory,
+		base_filename,
+		postfix,
+		".xlsx",
+		force_overwrite=settings.REWRITE_FILE_ON_CONFLICT or force_overwrite
+	)
 
 	# Сохраняем файл
 	wb.save(export_file_path)
