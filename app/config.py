@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import List
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,15 +22,15 @@ class Settings(BaseSettings):
 	SQL_DEBUG_MODE: bool = False
 
 	# File handling
-	SUPPORTED_FORMATS: List[str] = [".docx", ".doc", ".pdf", ".txt"]
+	SUPPORTED_FORMATS: list[str] = [".docx", ".doc", ".pdf", ".txt"]
 	MAX_FILES_TO_PROCESS: int = 0
 	CONSOLE_OUTPUT_BATCH_SIZE: int = 5
 	REWRITE_FILE_ON_CONFLICT: bool = False
 	MAX_DOCUMENTS_PER_EXPORT_FILE: int = 200
 
 	# Parsing
-	EXCLUDE_NAME_LIST: List[str] = []
-	LEGAL_ENTITY_PATTERNS: List[str] = [
+	EXCLUDE_NAME_LIST: list[str] = []
+	LEGAL_ENTITY_PATTERNS: list[str] = [
 		"ООО", "АО", "ОАО", "ПАО", "ИП",
 		"Общество с ограниченной ответственностью",
 		"Акционерное общество",

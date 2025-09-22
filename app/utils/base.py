@@ -1,55 +1,19 @@
 import json
-import re
-import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Any, TYPE_CHECKING, Optional
+from typing import Optional
 
 import docx
 import pdfplumber
 
 from app.config import settings
-from app.utils.cli_utils import confirm_prompt
-
-if TYPE_CHECKING:
-	from app.models import Document, DocumentCreate
+from app.services.tables import clean_table_data
+from app.utils.console import confirm_prompt
 
 
 def is_supported(file: Path) -> bool:
 	"""Проверить, что файл имеет поддерживаемое расширение"""
 	return file.suffix.lower() in settings.SUPPORTED_FORMATS
-
-
-def ensure_upload_dir() -> None:
-	Path(settings.EXPORT_DIR).mkdir(parents=True, exist_ok=True)
-
-
-def find_documents(directory: Path) -> Iterator[Path]:
-	"""
-	Находит все документы с указанными расширениями в директории.
-	"""
-	for ext in settings.SUPPORTED_FORMATS:
-		yield from directory.glob(f'**/*{ext}')
-
-
-def safe_move_file(src: Path, dst: Path) -> Path:
-	"""
-	Безопасно перемещает файл с созданием директорий и обработкой конфликтов.
-	"""
-	dst.parent.mkdir(parents=True, exist_ok=True)
-
-	if dst.exists():
-		if settings.REWRITE_FILE_ON_CONFLICT:
-			counter = 1
-			while dst.exists():
-				new_name = f"{dst.stem}-{counter:02d}{dst.suffix}"
-				dst = dst.with_name(new_name)
-				counter += 1
-		else:
-			raise FileExistsError(f"Файл {dst} уже существует")
-
-	shutil.move(str(src), str(dst))
-	return dst
 
 
 def extract_text_from_pdf(path: str) -> str:
@@ -110,7 +74,7 @@ def extract_text_from_docx(path: str) -> str:
 		return ""
 
 
-def parse_file_to_text(path: Path) -> str:
+def extract_text_from_file(path: Path) -> str:
 	"""
 	Универсальный парсер: выбирает логику по расширению.
 	Возвращает извлечённый текст (может быть пустой строкой).
@@ -132,169 +96,6 @@ def parse_file_to_text(path: Path) -> str:
 			return extract_text_from_txt(str(path))
 		except:
 			return ""
-
-
-def clean_table_data(table: list[list[Any]]) -> list[list[str]]:
-	"""
-	Очищает данные таблицы: убирает переносы строк, None, выравнивает размеры.
-	"""
-	cleaned_table = []
-
-	if not table:
-		return cleaned_table
-
-	# Находим максимальное количество колонок
-	max_cols = max(len(row) for row in table) if table else 0
-
-	for row in table:
-		cleaned_row = []
-		for cell in row:
-			# Обрабатываем каждую ячейку
-			if cell is None:
-				cleaned_cell = ""
-			else:
-				# Заменяем переносы строк на пробелы и чистим
-				cleaned_cell = str(cell).replace('\n', ' ').replace('\r', ' ')
-				# Убираем лишние пробелы
-				cleaned_cell = re.sub(r'\s+', ' ', cleaned_cell).strip()
-
-			cleaned_row.append(cleaned_cell)
-
-		# Добиваем строку до максимального количества колонок
-		while len(cleaned_row) < max_cols:
-			cleaned_row.append("")
-
-		cleaned_table.append(cleaned_row)
-
-	return cleaned_table
-
-
-def document_to_document_create(doc: 'Document', customer_plans: dict[str, list[Optional[float]]]) -> 'DocumentCreate':
-	"""
-	Конвертирует Document в DocumentCreate для совместимости с print_monthly_summary.
-	"""
-	from app.models import DocumentCreate, ProductPlanCreate
-
-	# Создаем планы из месячных данных
-	plans = []
-	for customer_name, monthly_plans in customer_plans.items():
-		for month_idx, quantity in enumerate(monthly_plans, 1):
-			if quantity is not None:
-				plans.append(ProductPlanCreate(
-					month=month_idx,
-					year=doc.year,
-					planned_quantity=quantity,
-					customer_name=customer_name if customer_name != "Все покупатели" else None
-				))
-
-	return DocumentCreate(
-		file_path=doc.file_path,
-		agreement_number=doc.agreement_number,
-		customer_names=json.loads(doc.customer_names) if doc.customer_names else [],
-		year=doc.year,
-		allowed_deviation=doc.allowed_deviation,
-		validation_errors=json.loads(doc.validation_errors) if doc.validation_errors else [],
-		plans=plans
-	)
-
-
-def print_formatted_table(table: list[list[Any]], title: str = "ТАБЛИЦА", max_col_width: int = 30):
-	"""
-	Отображает таблицу с ограничением ширины КАЖДОЙ колонки.
-	Если ячейка превышает max_col_width - укорачивает с '...'
-	"""
-	if not table:
-		print("   [пустая таблица]")
-		return
-
-	cleaned_table = clean_table_data(table)
-	if not cleaned_table:
-		return
-
-	max_cols = len(cleaned_table[0])
-
-	# 1. Определяем естественные ширины колонок (но не больше max_col_width)
-	col_widths = [0] * max_cols
-	for row in cleaned_table:
-		for i, cell in enumerate(row):
-			if i < max_cols:
-				# Естественная ширина, но не больше ограничения
-				cell_width = min(len(cell), max_col_width)
-				col_widths[i] = max(col_widths[i], cell_width)
-
-	# 2. Рассчитываем общую ширину таблицы
-	total_width = sum(col_widths) + (max_cols - 1) * 3  # " │ " между колонками
-
-	# 3. Отрисовываем таблицу
-	print(f"   ┌{'─' * total_width}┐")
-	print(f"   │ {title.center(total_width - 2)} │")
-	print(f"   ├{'─' * total_width}┤")
-
-	for row in cleaned_table:
-		cells = []
-		for i, cell in enumerate(row):
-			if i < len(col_widths):
-				display_cell = cell
-				# Укорачиваем если превышает лимит
-				if len(display_cell) > col_widths[i]:
-					display_cell = display_cell[:col_widths[i] - 3] + "..."
-				cells.append(display_cell.ljust(col_widths[i]))
-			else:
-				cells.append("")
-		print(f"   │ {' │ '.join(cells)} │")
-
-	print(f"   └{'─' * total_width}┘")
-
-
-def print_monthly_summary(document_data: 'DocumentCreate'):
-	"""
-	Отображает сводку планов закупок с учетом допустимого отклонения.
-	"""
-
-	# Группируем планы по покупателям
-	plans_by_customer = {}
-	for plan in document_data.plans:
-		customer_key = plan.customer_name or "all"
-		if customer_key not in plans_by_customer:
-			plans_by_customer[customer_key] = [None] * 12
-
-		if 1 <= plan.month <= 12 and plan.planned_quantity is not None:
-			month_index = plan.month - 1
-			# инициализируем и суммируем
-			if plans_by_customer[customer_key][month_index] is None:
-				plans_by_customer[customer_key][month_index] = plan.planned_quantity
-			else:
-				plans_by_customer[customer_key][month_index] += plan.planned_quantity
-
-	# Отображаем для каждого покупателя
-	for customer_name, monthly_plans in plans_by_customer.items():
-		display_name = "" if customer_name == "all" else customer_name
-
-		# Помечаем неизвестных покупателей
-		if customer_name.startswith('*'):
-			display_name = f"⚠️  {customer_name}"
-
-		if display_name:
-			print(f"\n   👥 {display_name}:")
-
-		# Создаем таблицу
-		table_data = [
-			["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек", "Итого"]
-		]
-
-		row = []
-		total = 0
-		for monthly_plan in monthly_plans:
-			if monthly_plan is not None:
-				row.append(str(monthly_plan))
-				total += monthly_plan
-			else:
-				row.append("")
-
-		row.append(str(total))
-		table_data.append(row)
-
-		print_formatted_table(table_data, "СУММАРНЫЕ ПЛАНЫ", max_col_width=8)
 
 
 def get_current_year() -> int:
@@ -350,3 +151,52 @@ def get_unique_filename(
 			return file_path
 		else:
 			counter += 1
+
+
+def format_string_list(
+		string_list: list[str] | str | None,
+		default_text: str = "—",
+		max_line_length: Optional[int] = None,
+		separator: str = "\n"
+) -> str:
+	"""
+	Форматирует список строк для отображения.
+
+	Args:
+		string_list: Список строк для форматирования
+		default_text: Текст если список пустой
+		max_line_length: Максимальная длина каждой строки
+		separator: Разделитель между строками
+
+	Returns:
+		Отформатированная строка
+	"""
+	if not string_list:
+		return default_text
+
+	# Нормализуем входные данные к списку строк
+	if isinstance(string_list, str):
+		try:
+			# Пробуем распарсить JSON строку
+			parsed = json.loads(string_list)
+			lines = parsed if isinstance(parsed, list) else [parsed]
+		except (json.JSONDecodeError, TypeError):
+			lines = [string_list]
+	else:
+		lines = string_list
+
+	if not lines:
+		return default_text
+
+	# Обрабатываем обрезание строк
+	if max_line_length:
+		formatted_lines = []
+		for line in lines:
+			line_str = str(line)  # На случай если не строка
+			if len(line_str) > max_line_length:
+				formatted_lines.append(line_str[:max_line_length] + "...")
+			else:
+				formatted_lines.append(line_str)
+		return separator.join(formatted_lines)
+	else:
+		return separator.join(str(line) for line in lines)

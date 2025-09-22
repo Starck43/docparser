@@ -219,9 +219,7 @@ def get_documents_with_errors(
 	"""
 	Получает документы с ошибками валидации.
 	"""
-	query: Select = select(Document).where(
-		Document.validation_errors != None
-	)
+	query: Select = select(Document).where(Document.validation_errors != None)
 
 	# Добавляем фильтр по году если указан
 	if year is not None:

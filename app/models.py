@@ -22,6 +22,31 @@ class Document(SQLModel, table=True):
 
 	plans: list["ProductPlan"] = Relationship(back_populates="document")
 
+	@property
+	def customer_names_list(self) -> list[str]:
+		"""Возвращает customer_names как список строк"""
+		if not self.customer_names:
+			return []
+		try:
+			return json.loads(self.customer_names)
+		except json.JSONDecodeError:
+			return [self.customer_names] if self.customer_names else []
+
+	@property
+	def validation_errors_list(self) -> list[str]:
+		"""Возвращает validation_errors как список строк"""
+		if not self.validation_errors:
+			return []
+		try:
+			return json.loads(self.validation_errors)
+		except json.JSONDecodeError:
+			return [self.validation_errors] if self.validation_errors else []
+
+	@property
+	def has_validation_errors(self) -> bool:
+		"""Проверяет наличие ошибок валидации"""
+		return bool(self.validation_errors_list)
+
 	def get_plans_summary(self) -> dict[str, list[Optional[float]]]:
 		"""
 		Возвращает сводку планов в виде {customer_name: [янв, фев, ..., дек]}
@@ -89,4 +114,3 @@ class ProductPlanCreate(BaseModel):
 	year: int
 	planned_quantity: Optional[float] = None
 	customer_name: Optional[str] = None
-

@@ -1,11 +1,12 @@
 from app.config import settings
 from app.crud import get_documents
 from app.db import get_db
-from app.export import export_to_xls_with_months
-from app.services.file_service import display_files_tree, parse_files
+from app.services.export import export_to_xls_with_months
+from app.services.files import display_files_tree
+from app.services.parser import main_file_parser
 from app.utils.base import get_current_year
-from app.utils.cli_utils import (
-	confirm_prompt, console, print_success, print_warning, select_directory
+from app.utils.console import (
+	confirm_prompt, console, print_success, print_warning, select_directory, print_error
 )
 
 try:
@@ -35,9 +36,24 @@ def run_parsing() -> int:
 	if not confirm_prompt("Начать парсинг файлов?", default=True):
 		return 0
 
-	documents = parse_files(files)
+	documents = main_file_parser(files)
 	print_success(f"Парсинг завершен. Обработано документов: [cyan]{len(documents)}[/cyan]")
 	return len(documents)
+
+
+def run_preview():
+	with next(get_db()) as db:
+		target_year = get_current_year()
+		documents = get_documents(db, year=target_year)
+
+		if not documents:
+			print_error(f"Нет документов за {target_year} год")
+			return
+
+		from app.services.preview import preview_export_data
+		console.print(f"Просмотр сохраненных данных за {target_year} год", style="green")
+		preview_export_data(list(documents), target_year)
+		return
 
 
 def run_export():
@@ -77,7 +93,8 @@ def main():
 				"🎯 Выберите действие:",
 				choices=[
 					questionary.Choice("📁 Парсинг файлов", value="parse"),
-					questionary.Choice("📊 Экспорт данных", value="export"),
+					questionary.Choice("📊 Просмотр результата", value="preview"),
+					questionary.Choice("🖥 Экспорт данных", value="export"),
 					questionary.Choice("🚪 Выйти", value="exit")
 				],
 				pointer="👉"
@@ -86,18 +103,22 @@ def main():
 			# Простое меню если questionary не установлен
 			console.print("\n🎯 Выберите действие:", style="bold")
 			console.print("1. 📁 Начать парсинг файлов")
-			console.print("2. 📊 Выполнить экспорт данных")
-			console.print("3. 🚪 Выйти")
+			console.print("2. 🖥 Просмотр результата")
+			console.print("3. 📊 Выполнить экспорт данных")
+			console.print("4. 🚪 Выйти")
 
-			choice_map = {"1": "parse", "2": "export", "3": "exit"}
-			choice_input = console.input("\nВаш выбор (1-3): ").strip()
+			choice_map = {"1": "parse", "2": "preview", "3": "export", "4": "exit"}
+			choice_input = console.input("\nВаш выбор (1-4): ").strip()
 			choice = choice_map.get(choice_input, "")
 
 		if choice == "parse":
 			documents_count = run_parsing()
 
-			if documents_count > 0 and confirm_prompt("\nПродолжить экспорт полученных данных?", default=True):
-				run_export()
+			if documents_count > 0 and confirm_prompt("\nЖелаете посмотреть полученный результат?", default=True):
+				run_preview()
+
+		elif choice == "preview":
+			run_preview()
 
 		elif choice == "export":
 			run_export()

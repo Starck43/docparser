@@ -8,13 +8,14 @@ from pathlib import Path
 from app import crud
 from app.config import settings
 from app.db import init_db, get_db
-from app.export import export_to_xls_with_months
-from app.services.document_parser import DocumentParser
-from app.services.file_service import find_files, display_files_tree
+from app.services.export import export_to_xls_with_months
+from app.services.parser import DocumentParser
+from app.services.files import display_files_tree
+from app.services.preview import preview_document_data
 from app.utils.base import (
-	get_current_year, extract_tables_from_pdf, extract_text_from_pdf, print_formatted_table, print_monthly_summary,
-	document_to_document_create
-)
+	get_current_year, extract_tables_from_pdf, extract_text_from_pdf, )
+from app.services.tables import print_formatted_table
+from app.utils.console import console
 
 
 def step1_find_files():
@@ -45,8 +46,7 @@ def step2_convert_to_text(files):
 			text = extract_text_from_pdf(str(file_path))
 			if text:
 				preview = text[:300].replace('\n', ' ')
-				print(f"   ✅ Текст ({len(text)} символов):")
-				print(f"   Preview: {preview}...")
+				print(f"Preview: {preview}...")
 
 			# 2. Извлекаем таблицы отдельно
 			tables = extract_tables_from_pdf(str(file_path))
@@ -58,7 +58,7 @@ def step2_convert_to_text(files):
 				print_formatted_table(table, f"ТАБЛИЦА {table_idx}", max_col_width=50)
 
 		except Exception as e:
-			print(f"   ❌ Ошибка: {e}")
+			print(f"❌ Ошибка: {e}")
 
 
 def step4_parse_documents(files, with_save=False):
@@ -84,37 +84,24 @@ def step4_parse_documents(files, with_save=False):
 
 				if document_data:
 					print(f"✅ Документ успешно распарсен {'с сохранением в БД' if with_save else 'без сохранения'}!")
-					print(f"   Номер: {document_data.agreement_number}")
-					print(f"   Год: {document_data.year}")
-					print(f"   Покупатели: {document_data.customer_names}")
-
-					# ОТОБРАЖАЕМ СВЯЗАНЫЕ ТАБЛИЦЫ ПЛАНОВ ЗАКУПОК!
-					print_monthly_summary(document_data)
-
-					if document_data.allowed_deviation and document_data.allowed_deviation != "* 0":
-						print(f"   📏 Допустимое отклонение: {document_data.allowed_deviation}")
-					elif document_data.allowed_deviation == "* 0":
-						print(f"   ⚠️  Допустимое отклонение: не указано")
-
-					if document_data.validation_errors:
-						print(f"   ⚠️  Ошибки: {document_data.validation_errors}")
+					console.print(preview_document_data([document_data]))
 
 					if with_save:
 						# Проверяем, не обработан ли уже файл
 						existing = crud.get_document_by_file_path(db, str(file_path))
 						if existing:
-							print(f"   ⏭️  Уже обработан и сохранен ранее (ID: {existing.id})")
+							print(f"⏭️  Уже обработан и сохранен ранее (ID: {existing.id})")
 							continue
 
 						# Сохраняем в БД
 						document = crud.save_document(db, document_data)
-						print(f"   💾 Сохранено в БД с ID: {document.id}")
+						print(f"💾 Сохранено в БД с ID: {document.id}")
 
 				else:
-					print("   ❌ Не удалось распарсить документ")
+					print("❌ Не удалось распарсить документ")
 
 			except Exception as e:
-				print(f"   ❌ Ошибка парсинга: {e}")
+				print(f"❌ Ошибка парсинга: {e}")
 				import traceback
 				traceback.print_exc()
 
@@ -145,33 +132,11 @@ def step5_view_documents():
 
 	with next(get_db()) as db:
 		# Получаем документы с суммированными планами
-		docs_with_plans = crud.get_documents_with_plans(db, year=year, limit=limit)
+		documents = crud.get_documents(db, year=year, limit=limit)
 
-		print(f"📊 Документов за {year} год: {len(docs_with_plans)}")
+		print(f"📊 Документов за {year} год: {len(documents)}")
 
-		for i, (doc, customer_plans) in enumerate(docs_with_plans, 1):
-			print(f"\n📄 [{i:03d}]: Дополнительное соглашение {doc.agreement_number or '<без номера>'}")
-			print(f"   ID: {doc.id}")
-			print(f"   Файл: {Path(doc.file_path).name}")
-			print(f"   Год: {doc.year}")
-
-			if doc.customer_names:
-				customers = json.loads(doc.customer_names)
-				print(f"   Покупатели: {', '.join(customers)}")
-
-			if doc.allowed_deviation and doc.allowed_deviation != "* 0":
-				print(f"   📏 Допустимое отклонение: {doc.allowed_deviation}")
-
-			if customer_plans:
-				# Конвертируем в DocumentCreate и отображаем таблицу
-				document_data = document_to_document_create(doc, customer_plans)
-				print_monthly_summary(document_data)
-
-			if doc.validation_errors:
-				errors = json.loads(doc.validation_errors)
-				print(f"   ⚠️  Ошибки (всего {len(errors)}):")
-				for error in errors:
-					print(f"      - {error}")
+		console.print(preview_document_data(documents=list(documents)))
 
 
 def step6_all_steps():

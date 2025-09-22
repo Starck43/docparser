@@ -1,9 +1,13 @@
 import re
 from pathlib import Path
 from typing import Optional, Any
+from app.config import settings
+from app.crud import save_document
+from app.db import get_db
 
-from app.models import DocumentCreate, ProductPlanCreate
+from app.models import DocumentCreate, ProductPlanCreate, Document
 from app.utils.base import get_current_year, extract_tables_from_pdf, extract_text_from_pdf
+from app.utils.console import print_warning, console, print_error
 
 
 class DocumentParser:
@@ -63,12 +67,15 @@ class DocumentParser:
 				plans.extend(table_plans)
 
 			# 5. Валидация
-			if agreement_number == "* без номера":
+			if not customers:
+				validation_errors.append("Покупатель не определен")
+
+			if isinstance(agreement_number, str) and agreement_number.startswith('*'):
 				validation_errors.append("Не удалось определить номер соглашения")
 			if not plans:
-				validation_errors.append("Не найдены данные о планах поставок")
+				validation_errors.append("Не найдены таблицы с планами закупок")
 			if isinstance(year_str, str) and year_str.startswith('*'):
-				validation_errors.append("Год определен по умолчанию")
+				validation_errors.append("Год не определен. Указан текущий")
 
 			# 6. Создаем результат
 			return DocumentCreate(
@@ -92,12 +99,10 @@ class DocumentParser:
 				plans=[]
 			)
 
-	def _parse_customers(self, text: str) -> list[str]:
+	def _parse_customers(self, text: str) -> list[str] | None:
 		"""
 		Парсит всех покупателей с учетом исключений.
 		"""
-		from app.config import settings
-
 		customers = []
 
 		# Ищем блок до пункта "1."
@@ -143,7 +148,7 @@ class DocumentParser:
 				unique_customers.append(customer)
 
 		if not unique_customers:
-			return ["* без названия"]
+			return
 
 		return unique_customers
 
@@ -629,3 +634,67 @@ def parse_document_file(file_path: Path) -> Optional[DocumentCreate]:
 	"""
 	parser = DocumentParser()
 	return parser.parse_document(file_path)
+
+
+def main_file_parser(
+		files: list[Path],
+		year: Optional[int] = None,
+		save_to_db: bool = True,
+		batch_size: int = settings.CONSOLE_OUTPUT_BATCH_SIZE
+) -> list['Document']:
+	"""Парсит переданные файлы, сохраняет и возвращает список документов"""
+
+	parser = DocumentParser()
+	documents = []
+	processed = 0
+
+	for i, file_path in enumerate(files, 1):
+		try:
+			# Парсим документ
+			document = parser.parse_document(file_path)
+
+			# Проверяем год если указан
+			if year is not None and document.year != year:
+				print_warning(f"Пропущен документ {file_path.name} (год в документе: {document.year})")
+				continue
+
+			# Сохраняем в БД если нужно
+			if save_to_db:
+				with next(get_db()) as db:
+					document = save_document(db, document)
+
+			documents.append(document)
+			processed += 1
+
+			# Формируем базовую информацию о файле
+			info_text = f"[{i}/{len(files)}]: {file_path.name}"
+
+			# Проверяем наличие ошибок валидации
+			has_errors = bool(document.validation_errors)
+			status_text = "[red]ERR[/red]" if has_errors else "[green]OK[/green]"
+
+			# Дополнительная информация об ошибках
+			error_info = ""
+			if has_errors:
+				error_count = len(document.validation_errors)
+				error_info = f" ([gold1]{error_count} ошибок[/gold1])"
+
+			# Показываем прогресс для всех файлов с ошибками или первых N
+			if has_errors or processed <= batch_size:
+				console.print(f"{info_text} ... {status_text}{error_info}")
+
+				# Показываем ошибки если есть
+				if has_errors:
+					for error in document.validation_errors:
+						console.print(f"   ⚠️  [yellow]{error}[/yellow]")
+
+			# Показываем последний файл если были пропуски
+			elif i == len(files) and processed > batch_size:
+				console.print(f"📊 ... + еще {processed - batch_size} файлов обработано")
+				console.print(f"{info_text} ... {status_text}{error_info}")
+
+		except Exception as e:
+			print_error(f"Ошибка обработки {file_path.name}: {e}")
+			continue
+
+	return documents

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.db import init_db
-from app.utils.cli_utils import confirm_prompt, console
+from app.utils.console import confirm_prompt, console
 
 
 def delete_database():

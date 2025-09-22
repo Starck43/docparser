@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -10,7 +9,7 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 
 from app.config import settings
 from app.models import Document, DocumentCreate
-from app.utils.base import get_unique_filename
+from app.utils.base import get_unique_filename, format_string_list
 
 
 def export_to_xls_with_months(
@@ -92,12 +91,7 @@ def export_to_xls_with_months(
 		file_path_obj = Path(doc.file_path) if isinstance(doc.file_path, str) else doc.file_path
 		file_name = file_path_obj.name
 
-		# Обрабатываем customer_names для преобразования к списку из json-формата
-		if doc.customer_names:
-			customer_names_list = json.loads(doc.customer_names)
-			customer_names = "\n".join(customer_names_list)
-		else:
-			customer_names = "Не указан"
+		customer_names = format_string_list(doc.customer_names, default_text="не определен")
 
 		base_data = {
 			"file_path": str(doc.file_path),
@@ -105,7 +99,7 @@ def export_to_xls_with_months(
 			"agreement_number": doc.agreement_number,
 			"year": doc.year,
 			"allowed_deviation": doc.allowed_deviation,
-			"validation_errors": "\n".join(doc.validation_errors) if doc.validation_errors else None
+			"validation_errors": format_string_list(doc.validation_errors)
 		}
 
 		# Суммируем планы по месяцам (как в step5_view_documents)
