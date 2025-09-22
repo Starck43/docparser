@@ -1,19 +1,17 @@
-from app.export import export_to_xls_with_months
-from app.services.file_service import find_files, display_files_tree
-from app.services.parser_service import parse_files
-from app.utils.base import get_current_year
+from app.services.file_service import find_files, display_files_tree, parse_files
+from app.utils.cli_utils import confirm_prompt, console, print_success
 
 
 def main():
-	print("📄 СБор информации из файлов и экспорт в XLS")
+	console.print("📄 СБор информации из файлов и экспорт в XLS")
 
 	# Находим файлы
 	files = find_files()
 	display_files_tree(files)
 
-	if input("Продолжить парсинг? (д/н): ").lower() in ['д', 'да', 'y', 'yes']:
+	if confirm_prompt("Продолжить парсинг?", default=True):
 		documents = parse_files(files)
-		print(f"✅ Обработано документов: {len(documents)}")
+		print_success(f"✅ Обработано документов: {len(documents)}")
 
 		# if input("Экспортировать результаты? (д/н): ").lower() in ['д', 'да', 'y', 'yes']:
 		# 	year = get_current_year()

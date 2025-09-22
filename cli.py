@@ -11,14 +11,11 @@ from app.crud import get_documents, get_documents_with_errors, get_documents_cou
 	get_years_in_documents
 from app.db import get_db
 from app.export import export_to_xls_with_months
-from app.services.file_service import find_files, display_files_tree
-from app.services.parser_service import parse_files
+from app.services.file_service import find_files, display_files_tree, parse_files
 from app.utils.base import get_current_year
-from app.utils.cli_utils import confirm_prompt
+from app.utils.cli_utils import confirm_prompt, console
 
-app = typer.Typer(help="📄 CLI для парсинга и управления документами")
-console = Console()
-
+app = typer.Typer(help="📄 CLI для парсинга документов")
 
 @app.command()
 def parse(

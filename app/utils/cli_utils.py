@@ -7,29 +7,22 @@ console = Console()
 
 def print_success(message: str) -> None:
 	"""Печатает успешное сообщение"""
-	console.print(f"✅ [green]{message}[/green]")
+	console.print(f"\n✅ [green]{message}[/green]")
 
 
 def print_error(message: str) -> None:
 	"""Печатает сообщение об ошибке"""
-	console.print(f"❌ [red]{message}[/red]")
+	console.print(f"\n❌ [red]{message}[/red]")
 
 
 def print_warning(message: str) -> None:
 	"""Печатает предупреждение"""
-	console.print(f"⚠️  [yellow]{message}[/yellow]")
-
-
-def create_table(title: str, **columns: str) -> Table:
-	"""Создает красивую таблицу для вывода"""
-	table = Table(title=title)
-	for col_name, col_style in columns.items():
-		table.add_column(col_name, style=col_style)
-	return table
+	console.print(f"\n⚠️  [yellow]{message}[/yellow]")
 
 
 def confirm_prompt(message: str, default: bool = True) -> bool:
 	"""Кастомное подтверждение с русскими д/н"""
+
 	choices = "Д/н" if default else "д/Н"
 	prompt = f"{message} [{choices}]: "
 
@@ -45,3 +38,12 @@ def confirm_prompt(message: str, default: bool = True) -> bool:
 		except (KeyboardInterrupt, EOFError):
 			console.print("\n❌ Отменено пользователем", style="red")
 			raise typer.Abort()
+
+
+def create_table(title: str, **columns: str) -> Table:
+	"""Создает таблицу с форматированием для вывода контекста."""
+
+	table = Table(title=title)
+	for col_name, col_style in columns.items():
+		table.add_column(col_name, style=col_style)
+	return table

@@ -15,7 +15,7 @@
 ## 🗂 Структура проекта
 ```sourcegraph
 docparser/
-├── .env # Конфигурация окружения
+├── .env.example # Конфигурация окружения (образец)
 ├── .gitignore # Игнорируемые файлы Git
 ├── README.md # Документация
 ├── cli.py # 📌 Основной интерфейс командной строки
@@ -24,12 +24,10 @@ docparser/
 ├── docparser.db # 🗄️ Файл базы данных SQLite
 │
 ├── app/ # Основной пакет приложения
-│   ├── init.py
 │   ├── config.py # ⚙️ Конфигурация приложения
 │   ├── crud.py # 🛠️ CRUD-операции с базой данных
 │   ├── db.py # 🔌 Подключение к базе данных
 │   ├── models.py # 🏗️ Модели SQLAlchemy
-│   ├── schemas.py # 🏷️ Pydantic-схемы
 │   ├── export.py # 📊 Экспорт в Excel
 │   │
 │   ├── services/ # 🧩 Бизнес-логика приложения
@@ -41,7 +39,7 @@ docparser/
 ├── scripts/ # 📜 Вспомогательные скрипты
 │   └── create_db.py # 🛠️ Инициализация базы данных
 │
-└── tests/ # 🧪 Модульные тесты
+└── tests/ # 🧪 Тесты
     └── test_parser.py # Тесты парсера
 ```
 
@@ -54,7 +52,7 @@ git clone https://github.com/Starck43/docparser.git
 cd docparser
 ````
 
-### Установка Python с окружением и зависимостями
+### Установка окружения Python и зависимостей приложения
 ```bash
 # Linux / macOS
 python -m venv .venv
@@ -69,7 +67,7 @@ pip install -r requirements.txt
 
 ### Быстрый запуск
 ```bash
-# Отредактируйте .env файл при необходимости
+# Создайте и отредактируйте .env файл со своими настройками. Образец в .env.example
 cp .env.example .env
 
 # Инициализация базы

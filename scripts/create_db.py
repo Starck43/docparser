@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.db import init_db
+from app.utils.cli_utils import confirm_prompt, console
 
 
 def delete_database():
@@ -21,29 +22,22 @@ def delete_database():
     return True
 
 
-def confirm_action() -> bool:
-    """Запрашивает подтверждение у пользователя."""
-    response = input("\nБудут удалены все существующие данные. Продолжить? [д/н]: ").strip().lower()
-    return response in ('y', 'у', 'да', 'д')  # Поддержка английской и русской 'y'
-
-
 def create_database():
     """
     Создает все таблицы в базе данных.
-    
     ВНИМАНИЕ: Удаляет существующую базу данных, если она есть.
     """
     db_path = Path(settings.DATABASE_URL.replace("sqlite:///", ""))
     
     if db_path.exists():
         print("\n" + "=" * 70)
-        print("ВНИМАНИЕ: БАЗА ДАННЫХ УЖЕ СУЩЕСТВУЕТ!")
+        print("⚠️ ВНИМАНИЕ: БАЗА ДАННЫХ УЖЕ СУЩЕСТВУЕТ!")
         print(f"Путь к базе данных: {db_path}")
         print("Все существующие данные будут удалены!")
         print("=" * 70)
-        
-        if not confirm_action():
-            print("\nОтменено пользователем.")
+
+        if confirm_prompt("Будут удалены все существующие данные. Продолжить?", default=False):
+            console.print("\nОтменено пользователем.")
             sys.exit(0)
     
     # Удаляем существующую базу данных
