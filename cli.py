@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from app.config import settings
@@ -11,7 +10,7 @@ from app.crud import get_documents, get_documents_with_errors, get_documents_cou
 	get_years_in_documents
 from app.db import get_db
 from app.export import export_to_xls_with_months
-from app.services.file_service import find_files, display_files_tree, parse_files
+from app.services.file_service import display_files_tree, parse_files
 from app.utils.base import get_current_year
 from app.utils.cli_utils import confirm_prompt, console
 
@@ -21,21 +20,19 @@ app = typer.Typer(help="📄 CLI для парсинга документов")
 def parse(
 		data_dir: Optional[Path] = typer.Option(None, help="Папка с документами"),
 		year: Optional[int] = typer.Option(None, help="Год для фильтрации"),
-		limit: int = typer.Option(0, help="Лимит файлов для обработки (0 = все)"),
+		limit: int = typer.Option(settings.MAX_FILES_TO_PROCESS, help="Лимит файлов для обработки (0 = все)"),
 		dry_run: bool = typer.Option(False, help="Тестовый режим без сохранения в БД"),
-		batch_size: int = typer.Option(5, help="Количество документов для отображения в консоли")
+		batch_size: int = typer.Option(
+			settings.CONSOLE_OUTPUT_BATCH_SIZE,
+			help="Количество документов для отображения в консоли"
+		)
 ):
 	"""Парсит документы из указанной папки"""
-	files = find_files(data_dir, limit)
 
-	if not files:
-		console.print("❌ Файлы не найдены", style="red")
-		return
-
-	display_files_tree(files)
+	files = display_files_tree(data_dir, max_display=batch_size)
 
 	if confirm_prompt("Продолжить парсинг?", default=True):
-		documents = parse_files(files, year, not dry_run, batch_size)
+		documents = parse_files(files[:limit], year, not dry_run, batch_size)
 		console.print(f"✅ Обработано документов: {len(documents)}", style="green")
 
 
