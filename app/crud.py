@@ -7,6 +7,23 @@ from sqlmodel import Session, select, delete
 from .models import Document, ProductPlan, DocumentCreate
 
 
+def save_document(db: Session, document_data: DocumentCreate) -> Type['Document'] | 'Document':
+	"""
+	Сохраняет или обновляет документ по его file_path.
+	Если документ с таким путем уже существует - обновляет его.
+	Если нет - создает новый.
+	"""
+	# Ищем существующий документ
+	existing_doc = get_document_by_file_path(db, str(document_data.file_path))
+
+	if existing_doc:
+		# Обновляем существующий документ
+		return update_document(db, existing_doc.id, document_data)
+	else:
+		# Создаем новый документ
+		return create_document(db, document_data)
+
+
 def create_document(db: Session, document_data: 'DocumentCreate') -> 'Document':
 	"""Создает документ с планами."""
 
@@ -36,30 +53,13 @@ def create_document(db: Session, document_data: 'DocumentCreate') -> 'Document':
 	return db_document
 
 
-def save_document(db: Session, document_data: DocumentCreate) -> Type['Document'] | 'Document':
-	"""
-	Сохраняет или обновляет документ по file_path.
-	Если документ с таким путем уже существует - обновляет его.
-	Если нет - создает новый.
-	"""
-	# Ищем существующий документ
-	existing_doc = get_document_by_file_path(db, str(document_data.file_path))
-
-	if existing_doc:
-		# Обновляем существующий документ
-		return update_document(db, existing_doc.id, document_data)
-	else:
-		# Создаем новый документ
-		return create_document(db, document_data)
-
-
 def update_document(
 		db: Session,
 		document_id: ColumnElement[int] | int,
 		document_data: 'DocumentCreate'
 ) -> Type['Document']:
 	"""
-	Обновляет документ и его планы.
+	Обновляет документ и его помесячные планы.
 	"""
 	# Находим документ
 	db_document = db.get(Document, document_id)
@@ -106,7 +106,7 @@ def get_documents(
 		limit: Optional[int] = None
 ) -> Sequence[Document]:
 	"""
-	Получает документы с предзагруженными планами.
+	Получает документы со списком помесячных планов.
 	"""
 	query = select(Document)
 
