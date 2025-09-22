@@ -73,6 +73,9 @@ cp .env.example .env
 # Инициализация базы
 python -m scripts.create_db 
 
+# Запуск парсинга
+python main.py
+
 # Распарсить папку с документами
 python cli.py parse --data-dir /mnt/shared/docs      # Linux
 python cli.py parse --data-dir D:\Shared\Docs        # Windows
