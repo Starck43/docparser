@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from app import crud
+from app.config import settings
 from app.db import init_db, get_db
 from app.export import export_to_xls_with_months
 from app.services.document_parser import DocumentParser
@@ -22,9 +23,7 @@ def step1_find_files():
 	print("🔍 ШАГ 1: Поиск файлов в папке данных")
 	print("=" * 60)
 
-	files = find_files(limit=5)
-	display_files_tree(files)
-	return files
+	return display_files_tree(settings.DATA_DIR)
 
 
 def step2_convert_to_text(files):
@@ -146,11 +145,11 @@ def step5_view_documents():
 
 	with next(get_db()) as db:
 		# Получаем документы с суммированными планами
-		documents_with_plans = crud.get_documents_with_plans(db, year=year, limit=limit)
+		docs_with_plans = crud.get_documents_with_plans(db, year=year, limit=limit)
 
-		print(f"📊 Документов за {year} год: {len(documents_with_plans)}")
+		print(f"📊 Документов за {year} год: {len(docs_with_plans)}")
 
-		for i, (doc, customer_plans) in enumerate(documents_with_plans, 1):
+		for i, (doc, customer_plans) in enumerate(docs_with_plans, 1):
 			print(f"\n📄 [{i:03d}]: Дополнительное соглашение {doc.agreement_number or '<без номера>'}")
 			print(f"   ID: {doc.id}")
 			print(f"   Файл: {Path(doc.file_path).name}")

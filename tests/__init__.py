@@ -1,4 +1,3 @@
-# tests/__init__.py
 import sys
 from pathlib import Path
 
