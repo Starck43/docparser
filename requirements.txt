@@ -6,6 +6,8 @@ python-docx
 openpyxl
 typer
 rich
+questionary
 pytest
 
 SQLAlchemy
+
