@@ -7,7 +7,6 @@ from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
-from app.config import settings
 from app.models import Document, DocumentCreate
 from app.utils.base import get_unique_filename, format_string_list
 
@@ -23,8 +22,6 @@ def export_to_xls_with_months(
 	Экспортирует список документов в XLS файл с детализацией по месяцам.
 	Использует логику как в step5_view_documents.
 	"""
-
-	export_directory = export_dir or settings.EXPORT_DIR
 
 	# Создаем рабочую книгу и лист
 	wb = Workbook()
@@ -216,11 +213,11 @@ def export_to_xls_with_months(
 
 	# Используем функцию для уникального имени
 	export_file_path = get_unique_filename(
-		export_directory,
+		export_dir,
 		base_filename,
 		postfix,
 		".xlsx",
-		force_overwrite=settings.REWRITE_FILE_ON_CONFLICT or force_overwrite
+		force_overwrite=force_overwrite
 	)
 
 	# Сохраняем файл

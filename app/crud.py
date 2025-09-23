@@ -127,6 +127,34 @@ def get_documents(
 	return documents
 
 
+def get_documents_by_range(db: Session, year: Optional[int] = None, range_str: str = None):
+	"""Получает документы по диапазону"""
+	query = select(Document)
+
+	if year:
+		query = query.where(Document.year == year)
+
+	if range_str:
+		if "-" in range_str:
+			start, end = map(lambda x: int(x) if x else None, range_str.split("-"))
+			if start:
+				query = query.offset(start - 1)
+			if end:
+				query = query.limit(end - (start or 0))
+		else:
+			# single number
+			query = query.limit(int(range_str))
+
+	return db.exec(query).all()
+
+
+def bulk_save_documents(db: Session, documents: list):
+	"""Массовое сохранение документов"""
+	if documents:
+		db.bulk_save_objects(documents)
+		db.commit()
+
+
 def get_documents_with_plans(
 		db: Session,
 		year: Optional[int] = None,

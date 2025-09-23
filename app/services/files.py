@@ -5,9 +5,6 @@ from app.config import settings
 from app.utils.base import is_supported
 from app.utils.console import print_success, print_error, console
 
-if TYPE_CHECKING:
-	pass
-
 
 def find_files(directory: Path, limit: int = 0) -> list[Path]:
 	"""Находит файлы в указанной директории с поддержкой форматов"""

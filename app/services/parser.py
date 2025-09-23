@@ -1,13 +1,111 @@
 import re
 from pathlib import Path
 from typing import Optional, Any
-from app.config import settings
-from app.crud import save_document
-from app.db import get_db
 
+from app.config import settings
+from app.crud import create_document, update_document, get_document_by_file_path
+from app.db import get_db
 from app.models import DocumentCreate, ProductPlanCreate, Document
 from app.utils.base import get_current_year, extract_tables_from_pdf, extract_text_from_pdf
 from app.utils.console import print_warning, console, print_error
+
+
+def main_file_parser(
+		files: list[Path],
+		year: int,
+		save_to_db: bool = True,
+		batch_size: int = settings.CONSOLE_OUTPUT_BATCH_SIZE,
+		update_mode: bool = False  # False = пропускать, True = перезаписывать
+) -> list['Document']:
+	"""Парсит переданные файлы, сохраняет и возвращает список документов"""
+
+	parser = DocumentParser()
+	documents = []
+	processed = 0
+	skipped = 0
+	updated = 0
+
+	for i, file_path in enumerate(files, 1):
+		try:
+			# Парсим документ
+			document = parser.parse_document(file_path)
+
+			# Проверяем год если указан
+			if document.year != year:
+				print_warning(f"Пропущен документ {file_path.name} (год в документе: {document.year})")
+				continue
+
+			with next(get_db()) as db:
+				# ⚡ ПРОВЕРЯЕМ РЕЖИМ ОБНОВЛЕНИЯ
+				existing_doc = get_document_by_file_path(db, str(file_path))
+
+				if existing_doc:
+					if update_mode:
+						# РЕЖИМ ПЕРЕЗАПИСИ: обновляем существующий
+
+						if save_to_db:
+							# Сохраняем в БД если указан флаг
+							document = update_document(db, existing_doc.id, document)
+						updated += 1
+						status_action = "[blue]ОБНОВЛЕН[/blue]"
+					else:
+						# РЕЖИМ ПРОПУСКА: пропускаем существующий
+						skipped += 1
+						status_action = "[yellow]ПРОПУЩЕН[/yellow]"
+						continue
+				else:
+					# НОВЫЙ ДОКУМЕНТ: создаем
+					if save_to_db:
+						document = create_document(db, document)
+					status_action = "[green]СОЗДАН[/green]"
+
+			documents.append(document)
+			processed += 1
+
+			# Формируем базовую информацию о файле
+			info_text = f"[{i}/{len(files)}]: {file_path.name}"
+
+			# Проверяем наличие ошибок валидации
+			has_errors = bool(document.validation_errors)
+			status_text = "[red]ERR[/red]" if has_errors else "[green]OK[/green]"
+
+			# Дополнительная информация об ошибках
+			error_info = ""
+			if has_errors:
+				error_count = len(document.validation_errors)
+				error_info = f" ([gold1]{error_count} ошибок[/gold1])"
+
+			# ⚡ ОТОБРАЖАЕМ РЕЖИМ ОБНОВЛЕНИЯ В СТАТУСЕ
+			full_status = f"{status_text} {status_action}{error_info}"
+
+			# Показываем прогресс для всех файлов с ошибками или первых N
+			if has_errors or processed <= batch_size:
+				console.print(f"{info_text} ... {full_status}")
+
+				# Показываем ошибки если есть
+				if has_errors:
+					for error in document.validation_errors:
+						console.print(f"   ⚠️  [yellow]{error}[/yellow]")
+
+			# Показываем последний файл если были пропуски
+			elif i == len(files) and processed > batch_size:
+				console.print(f"📊 ... + еще {processed - batch_size} файлов обработано")
+				console.print(f"{info_text} ... {full_status}")
+
+		except Exception as e:
+			print_error(f"Ошибка обработки {file_path.name}: {e}")
+			continue
+
+	console.print("\n" + "=" * 50, style="dim")
+	console.print(f"📊 Статистика обработки:", style="bold")
+	console.print(f"   Обработано: {processed}")
+	if updated > 0:
+		console.print(f"   Обновлено: {updated}")
+	if skipped > 0:
+		console.print(f"   Пропущено: {skipped} (существующие файлы)")
+	console.print("=" * 50, style="dim")
+
+	return documents
 
 
 class DocumentParser:
@@ -634,67 +732,3 @@ def parse_document_file(file_path: Path) -> Optional[DocumentCreate]:
 	"""
 	parser = DocumentParser()
 	return parser.parse_document(file_path)
-
-
-def main_file_parser(
-		files: list[Path],
-		year: Optional[int] = None,
-		save_to_db: bool = True,
-		batch_size: int = settings.CONSOLE_OUTPUT_BATCH_SIZE
-) -> list['Document']:
-	"""Парсит переданные файлы, сохраняет и возвращает список документов"""
-
-	parser = DocumentParser()
-	documents = []
-	processed = 0
-
-	for i, file_path in enumerate(files, 1):
-		try:
-			# Парсим документ
-			document = parser.parse_document(file_path)
-
-			# Проверяем год если указан
-			if year is not None and document.year != year:
-				print_warning(f"Пропущен документ {file_path.name} (год в документе: {document.year})")
-				continue
-
-			# Сохраняем в БД если нужно
-			if save_to_db:
-				with next(get_db()) as db:
-					document = save_document(db, document)
-
-			documents.append(document)
-			processed += 1
-
-			# Формируем базовую информацию о файле
-			info_text = f"[{i}/{len(files)}]: {file_path.name}"
-
-			# Проверяем наличие ошибок валидации
-			has_errors = bool(document.validation_errors)
-			status_text = "[red]ERR[/red]" if has_errors else "[green]OK[/green]"
-
-			# Дополнительная информация об ошибках
-			error_info = ""
-			if has_errors:
-				error_count = len(document.validation_errors)
-				error_info = f" ([gold1]{error_count} ошибок[/gold1])"
-
-			# Показываем прогресс для всех файлов с ошибками или первых N
-			if has_errors or processed <= batch_size:
-				console.print(f"{info_text} ... {status_text}{error_info}")
-
-				# Показываем ошибки если есть
-				if has_errors:
-					for error in document.validation_errors:
-						console.print(f"   ⚠️  [yellow]{error}[/yellow]")
-
-			# Показываем последний файл если были пропуски
-			elif i == len(files) and processed > batch_size:
-				console.print(f"📊 ... + еще {processed - batch_size} файлов обработано")
-				console.print(f"{info_text} ... {status_text}{error_info}")
-
-		except Exception as e:
-			print_error(f"Ошибка обработки {file_path.name}: {e}")
-			continue
-
-	return documents

@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -104,6 +105,59 @@ def get_current_year() -> int:
 	Используется как значение по умолчанию при парсинге.
 	"""
 	return datetime.now().year
+
+
+def parse_range_string(range_str: str | None, total: int) -> tuple[int, int]:
+	"""
+	Парсит строку диапазона в offset и limit.
+
+	:param range_str: Строка диапазона ('1-10', ':10', '5:', etc.)
+	:param total: Общее количество документов
+	:return: Кортеж (offset, limit)
+	"""
+	if not range_str or range_str.strip().lower() == "all":
+		return 0, total  # Все документы
+
+	range_str = range_str.strip()
+
+	# Приводим к нормальному виду: убираем лишние пробелы и приводим знаки '-' и ':' к одному стилю
+	normalized_range = range_str.replace(':', '-').replace(' ', '')
+
+	# Регулярное выражение для извлечения частей диапазона
+	match = re.match(r'^(\d*)\s*-\s*(\d*)$', normalized_range)
+	if match:
+		start_part, end_part = match.groups()
+
+		try:
+			# Начало диапазона (1-based → 0-based)
+			start = int(start_part) - 1 if start_part else 0
+			# Конец диапазона
+			end = int(end_part) if end_part else total
+
+			# Проверка корректности
+			if start < 0:
+				raise ValueError(f"Начало диапазона не может быть отрицательным: {start + 1}")
+			if end_part and end <= start:
+				raise ValueError(f"Конец диапазона должен быть больше начала: {start + 1}-{end}")
+			if start >= total:
+				raise ValueError(f"Начало диапазона ({start + 1}) превышает общее количество документов ({total})")
+
+			# Ограничение (разница между началом и концом)
+			limit = end - start if end > start else None
+
+		except ValueError as e:
+			raise ValueError(f"Некорректный диапазон '{range_str}': {e}")
+
+	elif normalized_range.isdigit():  # Просто число — ограниченное количество документов
+		limit = int(normalized_range)
+		if limit <= 0:
+			raise ValueError(f"Лимит должен быть положительным: {limit}")
+		return 0, limit
+
+	else:
+		raise ValueError(f"Некорректный формат диапазона: '{range_str}'. Используйте: '1-10', ':10', '5-', 'all'")
+
+	return start, limit
 
 
 def get_unique_filename(
