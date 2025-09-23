@@ -22,7 +22,7 @@ def find_files(directory: Path, limit: int = 0) -> list[Path]:
 	return files
 
 
-def display_files_tree(source: Path, max_display: int = 10) -> list[Path]:
+def display_files_tree(source: Path, max_display: int = settings.CONSOLE_OUTPUT_BATCH_SIZE) -> list[Path]:
 	"""Отображает дерево файлов и возвращает список найденных файлов"""
 	files = find_files(source)
 
@@ -32,11 +32,10 @@ def display_files_tree(source: Path, max_display: int = 10) -> list[Path]:
 
 	console.print(f"\n📁 {source.name.upper()}/", style="bold")
 	for i, file in enumerate(files[:max_display], 1):
-		prefix = "├──" if i < len(files) and i < max_display else "└──"
-		console.print(f"{prefix} 📄 [cyan]{file.name}[cyan]")
+		console.print(f"├── 📄 [gray]{file.name}[/gray]")
 
 	if len(files) > max_display:
-		console.print(f"└── ... и еще [cyan]{len(files) - max_display}[/cyan] файлов")
+		console.print(f"└── ... и еще [gray]{len(files) - max_display}[/gray] файлов")
 
 	print_success(f"Обнаружено файлов: [cyan]{len(files)}[/cyan]\n")
 	return files

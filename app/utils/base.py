@@ -2,13 +2,9 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
-import docx
-import pdfplumber
+from typing import Optional, Any
 
 from app.config import settings
-from app.services.tables import clean_table_data
 from app.utils.console import confirm_prompt
 
 
@@ -17,86 +13,99 @@ def is_supported(file: Path) -> bool:
 	return file.suffix.lower() in settings.SUPPORTED_FORMATS
 
 
-def extract_text_from_pdf(path: str) -> str:
+def extract_data_from_file(file_path: Path) -> tuple[str, Optional[list[dict[str, Any]]]]:
 	"""
-	Извлекает текст И таблицы из PDF используя pdfplumber.
-	Возвращает структурированный текст с таблицами.
+	Извлекает текст и таблицы из файла. Автоматически выбирает метод по расширению.
+
+	Args:
+		file_path: Путь к файлу
+
+	Returns:
+		Кортеж (текст, список таблиц)
+		Таблицы: список словарей с данными таблиц
 	"""
+	if not file_path.exists():
+		raise FileNotFoundError(f"Файл не найден: {file_path}")
+
+	file_ext = file_path.suffix.lower()
+
 	try:
-		texts = []
-		with pdfplumber.open(path) as pdf:
-			for page in pdf.pages:
-				page_text = page.extract_text()
-				if page_text:
-					texts.append(page_text)
-		return "\n".join(texts).strip()
+		if file_ext == '.pdf':
+			return _extract_from_pdf(file_path)
+		elif file_ext in ['.docx', '.doc']:
+			return _extract_from_docx(file_path)
+		elif file_ext == '.txt':
+			return _extract_from_txt(file_path)
+		else:
+			raise ValueError(f"Неподдерживаемый формат файла: {file_ext}")
 	except Exception as e:
-		print(f"Ошибка извлечения текста: {e}")
-		return ""
+		raise Exception(f"Ошибка извлечения данных из {file_path.name}: {e}")
 
 
-def extract_tables_from_pdf(path: str) -> list[list[list[str]]]:
-	"""
-	Извлекает и очищает таблицы из PDF.
-	"""
-	try:
-		all_tables = []
-		with pdfplumber.open(path) as pdf:
-			for page in pdf.pages:
-				tables = page.extract_tables()
-				for table in tables:
-					if table:
-						cleaned_table = clean_table_data(table)
-						if cleaned_table and len(cleaned_table) > 1:
-							all_tables.append(cleaned_table)
-		return all_tables
-	except Exception as e:
-		print(f"Ошибка извлечения таблиц: {e}")
-		return []
+def _extract_from_pdf(file_path: Path) -> tuple[str, Optional[list[dict[str, Any]]]]:
+	"""Извлекает текст и таблицы из PDF"""
+	import pdfplumber
+
+	text_content = ""
+	tables_data = []
+
+	with pdfplumber.open(file_path) as pdf:
+		for page in pdf.pages:
+			# Извлекаем текст
+			page_text = page.extract_text()
+			if page_text:
+				text_content += page_text + "\n"
+
+			# Извлекаем таблицы
+			page_tables = page.extract_tables()
+			for i, table in enumerate(page_tables):
+				if table and any(any(cell for cell in row) for row in table):
+					tables_data.append({
+						'page': page.page_number,
+						'table_number': i + 1,
+						'data': table,
+						'source': file_path.name
+					})
+
+	return text_content, tables_data if tables_data else None
 
 
-def extract_text_from_txt(path: str) -> str:
-	"""Извлечение текста из TXT"""
-	try:
-		with open(path, "r", encoding="utf-8", errors="ignore") as f:
-			return f.read()
-	except Exception as e:
-		print(f"Ошибка чтения TXT: {e}")
-		return ""
+def _extract_from_docx(file_path: Path) -> tuple[str, Optional[list[dict[str, Any]]]]:
+	"""Извлекает текст и таблицы из DOCX"""
+	from docx import Document
+
+	doc = Document(str(file_path))
+	text_content = ""
+	tables_data = []
+
+	# Извлекаем текст из параграфов
+	for paragraph in doc.paragraphs:
+		if paragraph.text.strip():
+			text_content += paragraph.text + "\n"
+
+	# Извлекаем таблицы
+	for i, table in enumerate(doc.tables):
+		table_data = []
+		for row in table.rows:
+			row_data = [cell.text.strip() for cell in row.cells]
+			if any(row_data):
+				table_data.append(row_data)
+
+		if table_data:
+			tables_data.append({
+				'table_number': i + 1,
+				'data': table_data,
+				'source': file_path.name
+			})
+
+	return text_content, tables_data if tables_data else None
 
 
-def extract_text_from_docx(path: str) -> str:
-	"""Извлечение текста из DOCX"""
-	try:
-		doc = docx.Document(path)
-		return "\n".join(paragraph.text for paragraph in doc.paragraphs)
-	except Exception as e:
-		print(f"Ошибка чтения DOCX: {e}")
-		return ""
-
-
-def extract_text_from_file(path: Path) -> str:
-	"""
-	Универсальный парсер: выбирает логику по расширению.
-	Возвращает извлечённый текст (может быть пустой строкой).
-	"""
-	if not is_supported(path):
-		raise ValueError(f"Формат {path.suffix} не поддерживается")
-
-	suffix = path.suffix.lower()
-
-	if suffix == ".pdf":
-		return extract_text_from_pdf(str(path))
-	elif suffix == ".txt":
-		return extract_text_from_txt(str(path))
-	elif suffix in [".docx", ".doc"]:
-		return extract_text_from_docx(str(path))
-	else:
-		# Пробуем как текст
-		try:
-			return extract_text_from_txt(str(path))
-		except:
-			return ""
+def _extract_from_txt(file_path: Path) -> tuple[str, None]:
+	"""Извлекает текст из TXT (таблиц нет)"""
+	with open(file_path, 'r', encoding='utf-8') as f:
+		text_content = f.read()
+	return text_content, None
 
 
 def get_current_year() -> int:

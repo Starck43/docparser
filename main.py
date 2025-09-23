@@ -5,9 +5,7 @@ from app.services.export import export_to_xls_with_months
 from app.services.files import display_files_tree
 from app.services.parser import main_file_parser
 from app.utils.base import get_current_year
-from app.utils.console import (
-	confirm_prompt, console, print_success, print_warning, select_directory, print_error
-)
+from app.utils.console import (confirm_prompt, console, print_success, print_warning, select_directory, print_error)
 
 try:
 	import questionary
@@ -36,9 +34,7 @@ def run_parsing() -> int:
 	if not confirm_prompt("Начать парсинг файлов?", default=True):
 		return 0
 
-	documents = main_file_parser(files)
-	print_success(f"Парсинг завершен. Обработано документов: [cyan]{len(documents)}[/cyan]")
-	return len(documents)
+	return main_file_parser(files, year=get_current_year())
 
 
 def run_preview():

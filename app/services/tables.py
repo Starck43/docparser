@@ -80,6 +80,6 @@ def print_formatted_table(table: list[list[Any]], title: str = "ТАБЛИЦА",
 				cells.append(display_cell.ljust(col_widths[i]))
 			else:
 				cells.append("")
-		print(f"   │ {' │ '.join(cells)} │")
+		print(f"   {' │ '.join(cells)}")
 
 	print(f"   └{'─' * total_width}┘")

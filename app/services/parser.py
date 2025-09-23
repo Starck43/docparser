@@ -3,109 +3,96 @@ from pathlib import Path
 from typing import Optional, Any
 
 from app.config import settings
-from app.crud import create_document, update_document, get_document_by_file_path
+from app.crud import create_document, update_document, get_document_by_file_path, bulk_save_documents
 from app.db import get_db
-from app.models import DocumentCreate, ProductPlanCreate, Document
-from app.utils.base import get_current_year, extract_tables_from_pdf, extract_text_from_pdf
-from app.utils.console import print_warning, console, print_error
+from app.models import DocumentCreate, ProductPlanCreate
+from app.utils.base import get_current_year, extract_data_from_file, format_string_list
+from app.utils.console import console, print_error
 
 
 def main_file_parser(
 		files: list[Path],
 		year: int,
-		save_to_db: bool = True,
-		batch_size: int = settings.CONSOLE_OUTPUT_BATCH_SIZE,
-		update_mode: bool = False  # False = пропускать, True = перезаписывать
-) -> list['Document']:
-	"""Парсит переданные файлы, сохраняет и возвращает список документов"""
+		save_to_db: bool = True,  # dry-run режим
+		update_mode: bool = False,  # False = пропускать, True = перезаписывать
+		use_bulk: bool = True
+) -> int:
+	"""
+	Парсит переданные файлы, сохраняет и возвращает список документов.
+	Возвращает количество обработанных документов.
+	"""
 
 	parser = DocumentParser()
-	documents = []
-	processed = 0
-	skipped = 0
-	updated = 0
+	bulk_buffer: list['DocumentCreate'] = []
+	processed = skipped = updated = 0
 
 	for i, file_path in enumerate(files, 1):
 		try:
-			# Парсим документ
-			document = parser.parse_document(file_path)
+			# Извлекаем данные из файла (data[0] - текст, data[1] - таблицы)
+			data = extract_data_from_file(file_path)
+			if not data[0]:
+				continue
 
-			# Проверяем год если указан
-			if document.year != year:
-				print_warning(f"Пропущен документ {file_path.name} (год в документе: {document.year})")
+			# Парсим документы за указанный год
+			document_data = parser.parse_document(str(file_path.name), data=data, year=year)
+
+			# Фильтр по году
+			if not document_data.plans:
+				full_status = parser.format_status(document_data.validation_errors, True, False)
+				console.print(f"[{i:03d}/{len(files)}]: [grey]{file_path.name}[/grey] ... {full_status}")
 				continue
 
 			with next(get_db()) as db:
-				# ⚡ ПРОВЕРЯЕМ РЕЖИМ ОБНОВЛЕНИЯ
 				existing_doc = get_document_by_file_path(db, str(file_path))
 
 				if existing_doc:
 					if update_mode:
-						# РЕЖИМ ПЕРЕЗАПИСИ: обновляем существующий
-
-						if save_to_db:
-							# Сохраняем в БД если указан флаг
-							document = update_document(db, existing_doc.id, document)
+						if save_to_db and not use_bulk:
+							document_data = update_document(db, existing_doc.id, document_data)
 						updated += 1
-						status_action = "[blue]ОБНОВЛЕН[/blue]"
 					else:
-						# РЕЖИМ ПРОПУСКА: пропускаем существующий
 						skipped += 1
-						status_action = "[yellow]ПРОПУЩЕН[/yellow]"
+						full_status = parser.format_status(document_data.validation_errors, True, update_mode)
+						console.print(f"[{i:03d}/{len(files)}]: [grey]{file_path.name}[/grey] ... {full_status}")
 						continue
 				else:
-					# НОВЫЙ ДОКУМЕНТ: создаем
-					if save_to_db:
-						document = create_document(db, document)
-					status_action = "[green]СОЗДАН[/green]"
+					if save_to_db and not use_bulk:
+						document_data = create_document(db, document_data)
 
-			documents.append(document)
+				# Если bulk-режим — откладываем для массовой вставки
+				if save_to_db and use_bulk:
+					bulk_buffer.append(document_data)
+
 			processed += 1
 
-			# Формируем базовую информацию о файле
-			info_text = f"[{i}/{len(files)}]: {file_path.name}"
+			# Формируем статус для отображения на экране
+			full_status = parser.format_status(document_data.validation_errors, bool(existing_doc), update_mode)
 
-			# Проверяем наличие ошибок валидации
-			has_errors = bool(document.validation_errors)
-			status_text = "[red]ERR[/red]" if has_errors else "[green]OK[/green]"
+			# Вывод в консоль
+			console.print(f"[{i:03d}/{len(files)}]: [gray]{file_path.name}[/gray] ... {full_status}")
 
-			# Дополнительная информация об ошибках
-			error_info = ""
-			if has_errors:
-				error_count = len(document.validation_errors)
-				error_info = f" ([gold1]{error_count} ошибок[/gold1])"
-
-			# ⚡ ОТОБРАЖАЕМ РЕЖИМ ОБНОВЛЕНИЯ В СТАТУСЕ
-			full_status = f"{status_text} {status_action}{error_info}"
-
-			# Показываем прогресс для всех файлов с ошибками или первых N
-			if has_errors or processed <= batch_size:
-				console.print(f"{info_text} ... {full_status}")
-
-				# Показываем ошибки если есть
-				if has_errors:
-					for error in document.validation_errors:
-						console.print(f"   ⚠️  [yellow]{error}[/yellow]")
-
-			# Показываем последний файл если были пропуски
-			elif i == len(files) and processed > batch_size:
-				console.print(f"📊 ... + еще {processed - batch_size} файлов обработано")
-				console.print(f"{info_text} ... {full_status}")
+			if document_data.validation_errors:
+				console.print(f"          ⚠️  [red]{format_string_list(document_data.validation_errors, separator=', ')}[/red]")
 
 		except Exception as e:
 			print_error(f"Ошибка обработки {file_path.name}: {e}")
 			continue
 
+		# Массовое сохранение (bulk)
+		if save_to_db and use_bulk and bulk_buffer:
+			with next(get_db()) as db:
+				bulk_save_documents(db, bulk_buffer, update_mode=update_mode)
+
+	# Итоговая статистика (общая)
 	console.print("\n" + "=" * 50, style="dim")
 	console.print(f"📊 Статистика обработки:", style="bold")
+	console.print(f"   Всего документов: {len(files)}")
 	console.print(f"   Обработано: {processed}")
-	if updated > 0:
-		console.print(f"   Обновлено: {updated}")
-	if skipped > 0:
-		console.print(f"   Пропущено: {skipped} (существующие файлы)")
+	console.print(f"   Обновлено: {updated}")
+	console.print(f"   Пропущено: {skipped}")
 	console.print("=" * 50, style="dim")
 
-	return documents
+	return processed
 
 
 class DocumentParser:
@@ -120,135 +107,114 @@ class DocumentParser:
 			'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
 		}
 
-	def parse_document(self, file_path: Path) -> Optional[DocumentCreate]:
+	def parse_document(
+			self,
+			src: str,
+			data: tuple[str, list[dict[str, Any]] | None],
+			year: int
+	) -> Optional[DocumentCreate]:
 		try:
 			validation_errors = []
 			plans = []
 
-			# 1. Извлекаем текст
-			text = extract_text_from_pdf(str(file_path))
-			if not text:
-				return None
+			# 1. Извлекаем текст и таблицы
+			text, tables = data
 
 			# 2. Парсим основные данные
 			agreement_number = self._parse_agreement_number(text)
+			agreement_year = self._parse_agreement_period(text)
 			customers = self._parse_customers(text)
-			year_str = self._detect_year(text)
-
-			try:
-				year = int(re.sub(r'\D', '', year_str)[:4])
-				if year < 2000 or year > 2100:
-					year = get_current_year()
-			except:
-				year = get_current_year()
 
 			# 3. Парсим допустимое отклонение с обработкой ошибок
 			allowed_deviation, deviation_errors = self._parse_allowed_deviation(text)
 
-			# 4. Извлекаем и парсим таблицы
-			raw_tables = extract_tables_from_pdf(str(file_path))
-
-			for i, table in enumerate(raw_tables):
+			# 4. Парсим таблицы
+			for i, table in enumerate(tables):
 				if not table or len(table) < 2:
 					continue
 
 				# Определяем покупателя для найденных таблиц с обработкой ошибок
 				customer_name, customer_errors = self._determine_customer_for_table(
-					tables_count=len(raw_tables),
+					tables_count=len(tables),
 					table_index=i,
 					customers=customers
 				)
 
 				validation_errors.extend(customer_errors)
 
-				table_plans = self._parse_table_data(table, year, customer_name)
-				plans.extend(table_plans)
+				table_data = table.get('data')
+				if table_data:
+					table_plans = self._parse_table_data(table_data, year, customer_name)
+					plans.extend(table_plans)
 
 			# 5. Валидация
 			if not customers:
 				validation_errors.append("Покупатель не определен")
 
-			if isinstance(agreement_number, str) and agreement_number.startswith('*'):
+			if not agreement_number:
 				validation_errors.append("Не удалось определить номер соглашения")
-			if not plans:
-				validation_errors.append("Не найдены таблицы с планами закупок")
-			if isinstance(year_str, str) and year_str.startswith('*'):
-				validation_errors.append("Год не определен. Указан текущий")
 
-			# 6. Создаем результат
+			if not agreement_year:
+				validation_errors.append("Год окончания действия соглашения не определен")
+
+			if not plans:
+				validation_errors.append(f"Не найдены таблицы с планами закупок на {year} год")
+
+			# 6. Возвращаем сформированный объект для сохранения
 			return DocumentCreate(
-				file_path=str(file_path),
-				agreement_number=agreement_number,
-				customer_names=customers,
+				file_path=src,
+				agreement_number=agreement_number or "* Без номера",
+				customer_names=customers or ["* Без названия"],
 				year=year,
-				allowed_deviation=allowed_deviation,  # ← Теперь здесь!
+				allowed_deviation=allowed_deviation,
 				validation_errors=validation_errors,
 				plans=plans
 			)
 
 		except Exception as e:
 			return DocumentCreate(
-				file_path=str(file_path),
+				file_path=src,
 				agreement_number="* ошибка парсинга",
 				customer_names=["* ошибка парсинга"],
 				year=get_current_year(),
 				allowed_deviation="* 0",
-				validation_errors=[f"Ошибка: {str(e)}"],
+				validation_errors=[str(e)],
 				plans=[]
 			)
 
 	def _parse_customers(self, text: str) -> list[str] | None:
 		"""
-		Парсит всех покупателей с учетом исключений.
+		Парсер который оставляет только короткие варианты названий.
+		Учитывает случаи, когда правая скобка может отсутствовать:
+		извлекает короткий вариант из круглой скобки до запятой/именуем.
 		"""
-		customers = []
-
-		# Ищем блок до пункта "1."
-		block_match = re.search(r'(.*?)(?=1\.)', text, re.DOTALL)
+		# 1. Ограничиваем поиск
+		block_match = re.search(r'(.*?)(?=нижеследующем:|1\.)', text, re.DOTALL | re.IGNORECASE)
 		if not block_match:
-			return ["* без названия"]
-
-		search_block = block_match.group(1)
-
-		# Создаем динамический паттерн
-		patterns = "|".join(re.escape(pattern) for pattern in settings.LEGAL_ENTITY_PATTERNS)
-		pattern = rf'((?:{patterns})[^,]+?)(?=,|\n|именуемое)'
-
-		matches = re.finditer(pattern, search_block, re.IGNORECASE)
-
-		for match in matches:
-			customer = match.group(1).strip()
-
-			# Очищаем
-			customer = re.sub(r'^[\s_]+|[\s_]+$', '', customer)
-
-			# Убираем лишние скобки и кавычки
-			customer = re.sub(r'\([^)]*\)', '', customer)  # Убираем (ООО «Ромашка»)
-			customer = re.sub(r'"[^"]*"', '', customer)  # Убираем "ООО Ромашка"
-			customer = customer.strip()
-
-			# Проверяем исключения
-			should_exclude = any(
-				exclude_term.lower() in customer.lower()
-				for exclude_term in settings.EXCLUDE_NAME_LIST
-			)
-
-			# Дополнительная проверка длины
-			is_valid_length = 5 < len(customer) < 200
-
-			if customer and not should_exclude and is_valid_length:
-				customers.append(customer)
-
-		# Убираем дубликаты
-		unique_customers = []
-		for customer in customers:
-			if customer not in unique_customers:
-				unique_customers.append(customer)
-
-		if not unique_customers:
 			return
 
-		return unique_customers
+		search_text = block_match.group(1)
+
+		# 2. Объединяем переносы строк внутри кавычек
+		search_text = re.sub(r'([«"\'`][^»"\'`]*)\n([^»"\'`]*[»"\'`])', r'\1 \2', search_text)
+
+		# 3. Юр. формы
+		patterns = "|".join(re.escape(p) for p in settings.LEGAL_ENTITY_PATTERNS)
+
+		# 4. Берём участок от юр.формы до первой запятой или слова "именуем"
+		regex = re.compile(rf'({patterns})([^,\n]*?)(?=[_,]|\bименуем\b)', re.IGNORECASE | re.DOTALL)
+		matches = [m.group().strip() for m in regex.finditer(search_text)]
+
+		# 5. Если есть скобки — берём последнюю часть (короткое имя), иначе само название
+		customers = [part.strip(" )") for m in matches for part in [m.split("(")[-1].strip()]]
+
+		# 6. Фильтруем исключения
+		customers = [
+			name for name in customers
+			if not any(exc.lower() in name.lower() for exc in settings.EXCLUDE_NAME_LIST)
+		]
+
+		return customers
 
 	def _determine_customer_for_table(
 			self,
@@ -275,7 +241,7 @@ class DocumentParser:
 			customer_name = f"* Покупатель {table_index + 1}"
 			errors.append(f"Неизвестный покупатель для таблицы {table_index + 1}")
 			return customer_name, errors
-		
+
 	def _parse_tables_to_plans(self, tables: list[list[list[str]]], year: int, customers: list[str]) -> list[
 		ProductPlanCreate]:
 		"""
@@ -303,7 +269,8 @@ class DocumentParser:
 
 	def _find_all_tables(self, text: str) -> list[list[list[str]]]:
 		"""
-		Находит все таблицы между пунктами 2. и 3.
+		Находит все таблицы в тексте документа между пунктами 2. и 3.
+		TODO: склеить таблицы, если это одна резаная на две страницы. То есть в первой ячейке первой строки не может быть число в новой таблице!
 		"""
 		tables = []
 
@@ -357,51 +324,6 @@ class DocumentParser:
 				))
 
 		return plans
-
-	def _parse_date_with_year(self, cell: str, document_year: int) -> tuple[Optional[int], int]:
-		"""
-		Парсит дату и возвращает месяц и найденный год.
-		Проверяет соответствие году документа.
-		"""
-		cell_lower = cell.lower().strip()
-		found_year = document_year  # По умолчанию используем год документа
-
-		# Сначала пытаемся извлечь год из ячейки
-		year_match = re.search(r'20\d{2}', cell_lower)
-		if year_match:
-			found_year = int(year_match.group())
-
-		# Если найденный год не совпадает с годом документа - пропускаем
-		if found_year != document_year:
-			return None, found_year
-
-		# Теперь парсим месяц (упрощенная версия без дублирования года)
-		# Формат: Январь, Апрель, апрель
-		for month_name, month_num in self.month_map.items():
-			if month_name in cell_lower:
-				return month_num, found_year
-
-		# Формат: янв., фев., мар.
-		month_abbr_map = {
-			'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'май': 5, 'июн': 6,
-			'июл': 7, 'авг': 8, 'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12
-		}
-
-		for abbr, month_num in month_abbr_map.items():
-			if abbr in cell_lower:
-				return month_num, found_year
-
-		# Формат: 01 или 1 (только месяц)
-		month_match = re.search(r'\b([1-9]|1[0-2])\b', cell_lower)
-		if month_match:
-			try:
-				month = int(month_match.group(1))
-				if 1 <= month <= 12:
-					return month, found_year
-			except ValueError:
-				pass
-
-		return None, found_year
 
 	def _process_numeric_columns(self, cells: list[str], product_names: list[str]) -> list[tuple[str, Optional[float]]]:
 		"""
@@ -553,25 +475,6 @@ class DocumentParser:
 
 		return has_numbers or has_months or has_table_pattern
 
-	def _extract_product_names(self, header_row: list[str]) -> list[str]:
-		"""
-		Извлекает названия продуктов из заголовка таблицы.
-		"""
-		product_names = []
-
-		for i, cell in enumerate(header_row):
-			if i == 0:
-				continue  # Пропускаем первую колонку (обычно "Месяц")
-
-			# Очищаем название от единиц измерения и лишних слов
-			name = re.sub(r'\(.*?\)|тонн|т\.|т\b', '', cell, flags=re.IGNORECASE).strip()
-			if name:
-				product_names.append(name)
-			else:
-				product_names.append(f"Продукт {i}")
-
-		return product_names
-
 	def _parse_month_from_cell(self, cell: str, year: int) -> Optional[int]:
 		"""
 		Парсит месяц из ячейки с использованием переданного года.
@@ -634,31 +537,9 @@ class DocumentParser:
 		except (ValueError, TypeError):
 			return None
 
-	def _detect_year(self, text: str) -> str | Any:
-		"""
-		Ищет год в блоке между 1. и 2.
-		Берет последнее вхождение, иначе текущий год с '*'.
-		"""
-
-		# Ищем блок между 1. и 2.
-		block_match = re.search(r'1\.(.*?)2\.', text, re.DOTALL)
-		if not block_match:
-			return f"* {get_current_year()}"
-
-		search_block = block_match.group(1)
-
-		# Ищем все года в этом блоке
-		year_matches = re.findall(r'20\d{2}', search_block)
-		if year_matches:
-			# Берем последнее вхождение
-			return year_matches[-1]
-		else:
-			return f"* {get_current_year()}"
-
-	def _parse_agreement_number(self, text: str) -> str:
+	def _parse_agreement_number(self, text: str) -> str | None:
 		"""
 		Ищет номер доп. Соглашения в начале строки с фразой 'ДОПОЛНИТЕЛЬНОЕ СОГЛАШЕНИЕ'.
-		Возвращает "* без номера" если не найдено.
 		"""
 		lines = text.split('\n')
 		for line in lines:
@@ -667,10 +548,25 @@ class DocumentParser:
 				match = re.search(r'ДОПОЛНИТЕЛЬНОЕ\s+СОГЛАШЕНИЕ\s*(?:№|No|#)?\s*(\S+)', line, re.IGNORECASE)
 				if match:
 					return match.group(1).strip()
-				else:
-					# Если фраза есть, но номера нет
-					return "* без номера"
-		return "* без номера"
+
+	def _parse_agreement_period(self, text: str) -> str | None:
+		"""
+		Ищет годы из периода соглашения в блоке между пунктами 1. и 2.
+		Возвращает последнее значение из найденных
+		"""
+
+		# Ищем блок между 1. и 2.
+		block_match = re.search(r'1\.(.*?)2\.', text, re.DOTALL)
+		if not block_match:
+			return
+
+		search_block = block_match.group(1)
+
+		# Ищем все года в этом блоке
+		year_matches = re.findall(r'20\d{2}', search_block)
+		if year_matches:
+			# Берем последнее вхождение
+			return year_matches[-1]
 
 	def _find_table_by_pattern(self, text: str, pattern: str) -> Optional[list[list[str]]]:
 		"""
@@ -684,11 +580,11 @@ class DocumentParser:
 					return table
 		return None
 
-	def _parse_allowed_deviation(self, text: str)  -> tuple[Optional[str], list[str]]:
+	def _parse_allowed_deviation(self, text: str) -> tuple[Optional[str], list[str]]:
 		"""
-		Парсит допустимое отклонение из блока между 4. и 5.
-		Берет последнее число, добавляет % если есть.
-		Возвращает (отклонение, ошибки).
+		Парсит допустимое отклонение из текстового блока между пунктами 4. и 5.
+		Берет последнее минимальное число, добавляет % если есть.
+		Возвращает (минимальное отклонение, ошибки).
 		"""
 		validation_errors = []
 
@@ -718,17 +614,22 @@ class DocumentParser:
 		else:
 			return last_number, validation_errors
 
+	@staticmethod
+	def format_status(validation_errors: list[str], is_exist: bool, update_mode: bool) -> str:
+		"""Формирует статус для вывода в консоль"""
 
-def parse_document_file(file_path: Path) -> Optional[DocumentCreate]:
-	"""
-	Публичная функция для парсинга файла документа.
-	Используется внешними модулями для обработки файлов.
+		# Валидация
+		if validation_errors:
+			validation = f"[red]{len(validation_errors)} ошибка[/red]"
+		else:
+			validation = "[green]OK[/green]"
 
-	Args:
-		file_path: Путь к файлу для парсинга
+		if is_exist:
+			if update_mode:
+				action = " ([blue]Обновлен[/blue])"
+			else:
+				action = " ([yellow]Пропущен[/yellow])"
+		else:
+			action = ""
 
-	Returns:
-		DocumentCreate или None в случае ошибки
-	"""
-	parser = DocumentParser()
-	return parser.parse_document(file_path)
+		return f"{validation} {action}"

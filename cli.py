@@ -4,18 +4,38 @@ from typing import Optional
 import typer
 
 from app.config import settings
-from app.core.cli_parameters import get_common_cli_params
-from app.crud import (
-	get_documents, get_documents_count, delete_all_documents,
-	delete_documents_by_year, get_documents_with_errors, )
 from app.db import get_db
 from app.services.export import export_to_xls_with_months
 from app.services.files import display_files_tree
 from app.services.parser import main_file_parser
-from app.utils.base import format_string_list, parse_range_string
+from app.utils.base import format_string_list, parse_range_string, get_current_year
 from app.utils.console import confirm_prompt, console, print_error, print_success, print_warning
+from app.crud import (
+	get_documents, get_documents_count, delete_all_documents, delete_documents_by_year, get_documents_with_errors
+)
 
 app = typer.Typer(help="📄 CLI команды для гибкой работы с данными")
+
+
+def get_common_cli_params(
+		range_str: Optional[str] = None,
+		year: Optional[int] = None,
+		limit: int = 0,
+		batch_size: int = None,
+		rows_per_file: int = settings.MAX_DOCUMENTS_PER_EXPORT_FILE,
+		force_update: bool = False,
+		full_clean: bool = False
+):
+	"""Общие параметры для парсинга"""
+	return {
+		'year': year or get_current_year(),
+		'range_str': range_str,
+		'limit': limit or settings.MAX_FILES_TO_PROCESS,
+		'batch_size': batch_size or settings.CONSOLE_OUTPUT_BATCH_SIZE,
+		'rows_per_file': rows_per_file or settings.MAX_DOCUMENTS_PER_EXPORT_FILE,
+		'force_update': force_update or settings.REWRITE_FILE_ON_CONFLICT,
+		'full_clean': full_clean
+	}
 
 
 @app.command()
@@ -25,10 +45,10 @@ def parse(
 			help=f"Папка с исходными документами (по умолчанию: {settings.DATA_DIR})"
 		),
 		year: Optional[int] = typer.Option(None, help="Год для выборки данных (по умолчанию: текущий)"),
-		limit: int = typer.Option(0, help="Лимит файлов для обработки (0 = все)"),
+		limit: int = typer.Option(None, help="Лимит файлов для обработки (0 = все)"),
 		dry_run: bool = typer.Option(False, help="Тестовый режим без сохранения в БД"),
 		batch_size: int = typer.Option(
-			10,
+			None,
 			help=f"Количество документов для отображения в консоли (по умолчанию {settings.CONSOLE_OUTPUT_BATCH_SIZE})"
 		),
 		force_update: bool = typer.Option(
@@ -48,14 +68,43 @@ def parse(
 		print_warning("*** РЕЖИМ БЕЗ СОХРАНЕНИЯ ***")
 
 	if confirm_prompt("Продолжить парсинг?", default=True):
-		documents = main_file_parser(
+		main_file_parser(
 			files[:params['limit'] or None],
 			params['year'],
 			not dry_run,
-			params['batch_size'],
-			update_mode=params['force_update']
+			update_mode=params['force_update'],
+			use_bulk=True
 		)
-		print_success(f"Обработано документов: {len(documents)}")
+
+
+@app.command()
+def preview(
+		year: Optional[int] = typer.Option(None, help="Год для просмотра (по умолчанию: текущий)"),
+		range_str: str = typer.Option("1-10", "--range", help="Диапазон документов: 1-10, :20, all"),
+):
+	"""Просмотр сохраненных документов"""
+
+	params = get_common_cli_params(year=year)
+
+	with next(get_db()) as db:
+		total_count = get_documents_count(db, year=params['year'])
+
+		# Получаем документы по диапазону
+		try:
+			offset, limit = parse_range_string(range_str, total_count)
+		except ValueError as e:
+			print_error(str(e))
+			return
+
+		documents = get_documents(db, year=params['year'], skip=offset, limit=limit)
+
+		if not documents:
+			print_error(f"Нет документов за {params['year']} год")
+			return
+
+		from app.services.preview import preview_export_data
+		console.print(f"Просмотр сохраненных данных за {params['year']} год", style="green")
+		preview_export_data(list(documents), params['year'])
 
 
 @app.command()

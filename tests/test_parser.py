@@ -9,12 +9,11 @@ from app import crud
 from app.config import settings
 from app.db import init_db, get_db
 from app.services.export import export_to_xls_with_months
-from app.services.parser import DocumentParser
 from app.services.files import display_files_tree
+from app.services.parser import DocumentParser
 from app.services.preview import preview_document_data
-from app.utils.base import (
-	get_current_year, extract_tables_from_pdf, extract_text_from_pdf, )
 from app.services.tables import print_formatted_table
+from app.utils.base import get_current_year, extract_data_from_file
 from app.utils.console import console
 
 
@@ -28,34 +27,37 @@ def step1_find_files():
 
 
 def step2_convert_to_text(files):
-	"""Шаг 2: Проверка преобразования в текст и таблицы"""
+	"""Шаг 2: Проверка преобразования документа в текст и таблицы"""
 	print("\n" + "=" * 60)
 	print("📝 ШАГ 2: Преобразование файлов в текст и таблицы")
 	print("=" * 60)
 
 	if not files:
-		print("❌ Нет файлов для обработки")
 		return
 
 	for i, file_path in enumerate(files, 1):
 		print(f"\n📄 Файл {i}: {file_path.name}")
-		print("-" * 40)
+		print("-" * 60)
 
 		try:
-			# 1. Извлекаем текст (без таблиц)
-			text = extract_text_from_pdf(str(file_path))
+			# 1. Извлекаем текст с таблицами
+			text, tables = extract_data_from_file(file_path)
+
 			if text:
-				preview = text[:300].replace('\n', ' ')
-				print(f"Preview: {preview}...")
+				preview = text[:450] + "..." if len(text) > 400 else text
+				print(f"{preview}")
 
-			# 2. Извлекаем таблицы отдельно
-			tables = extract_tables_from_pdf(str(file_path))
-			print(f"   📊 Таблиц: {len(tables)}")
-
-			# 3. Показываем таблицы с выравниванием
-			for table_idx, table in enumerate(tables, 1):
-				print(f"\n   📋 ТАБЛИЦА {table_idx}:")
-				print_formatted_table(table, f"ТАБЛИЦА {table_idx}", max_col_width=50)
+			if tables:
+				print(f"   📊 Найдено таблиц: {len(tables)}\n")
+				# Дополнительная информация о таблицах
+				for table_idx, table_info in enumerate(tables, 1):
+					table_data = table_info['data']
+					print(f"   📋 ТАБЛИЦА {table_idx}")
+					print(f"   📏 Размер: {len(table_data)}×{len(table_data[0]) if table_data else 0}")
+					print(f"   📋 Источник: {table_info.get('source', 'unknown')}")
+					print_formatted_table(table_data, f"ТАБЛИЦА {table_idx}", max_col_width=30)
+			else:
+				print("   📊 Таблицы: не обнаружено")
 
 		except Exception as e:
 			print(f"❌ Ошибка: {e}")
@@ -68,7 +70,15 @@ def step4_parse_documents(files, with_save=False):
 	print("=" * 60)
 
 	if not files:
-		print("❌ Нет файлов для обработки")
+		return
+
+	# Выбор года
+	year_input = input("Введите год (оставьте пустым для всех лет): ").strip()
+
+	try:
+		year = int(year_input) if year_input else None
+	except ValueError:
+		print("❌ Неверный формат года")
 		return
 
 	parser = DocumentParser()
@@ -76,15 +86,21 @@ def step4_parse_documents(files, with_save=False):
 	with next(get_db()) as db:
 		for i, file_path in enumerate(files, 1):
 			print(f"\n📄 Файл {i}: {file_path.name}")
-			print("-" * 40)
+			print("-" * 60)
 
 			try:
 				# Парсим документ
-				document_data = parser.parse_document(file_path)
+				data = extract_data_from_file(file_path)
+				if not data:
+					return None
+
+				document_data = parser.parse_document(str(file_path.name), data, year)
 
 				if document_data:
 					print(f"✅ Документ успешно распарсен {'с сохранением в БД' if with_save else 'без сохранения'}!")
-					console.print(preview_document_data([document_data]))
+					print(f"Контрагенты: {document_data.customer_names}")
+					preview_table = preview_document_data([document_data])
+					console.print(preview_table)
 
 					if with_save:
 						# Проверяем, не обработан ли уже файл

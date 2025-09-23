@@ -148,11 +148,37 @@ def get_documents_by_range(db: Session, year: Optional[int] = None, range_str: s
 	return db.exec(query).all()
 
 
-def bulk_save_documents(db: Session, documents: list):
-	"""Массовое сохранение документов"""
-	if documents:
-		db.bulk_save_objects(documents)
-		db.commit()
+def bulk_save_documents(db: Session, documents_data: list['DocumentCreate'], update_mode: bool = False) -> int:
+	"""
+	Массовое сохранение документов с поддержкой режимов обновления.
+
+	Args:
+		db: Сессия БД
+		documents_data: Список документов для сохранения
+		update_mode: False - пропускать существующие, True - обновлять
+
+	Returns:
+		Количество сохраненных/обновленных документов
+	"""
+
+	saved_count = 0
+
+	for doc_data in documents_data:
+		try:
+			existing = get_document_by_file_path(db, str(doc_data.file_path))
+			if existing:
+				if update_mode:
+					update_document(db, existing.id, doc_data)
+					saved_count += 1
+			else:
+				create_document(db, doc_data)
+				saved_count += 1
+		except Exception as e:
+			print(f"❌ Ошибка сохранения документа {doc_data.file_path}: {e}")
+			continue
+
+	db.commit()
+	return saved_count
 
 
 def get_documents_with_plans(
@@ -201,28 +227,8 @@ def get_documents_with_plans(
 	return results
 
 
-def get_years_in_documents(db:Session):
+def get_years_in_documents(db: Session):
 	return db.exec(select(Document.year).distinct()).scalar().all()
-
-
-def get_documents_by_year_range(
-		db: Session,
-		start_year: int,
-		end_year: int,
-		limit: Optional[int] = None
-) -> Sequence['Document']:
-	"""
-	Получает документы за диапазон лет.
-	"""
-	query: Select = select(Document).where(
-		Document.year >= start_year,
-		Document.year <= end_year
-	)
-
-	if limit is not None:
-		query = query.limit(limit)
-
-	return db.exec(query).all()
 
 
 def get_documents_count(

@@ -1,6 +1,7 @@
 import re
 import json
 
+from sqlalchemy import Index
 from sqlmodel import SQLModel, Field, Relationship
 from typing import Optional
 from datetime import datetime
@@ -21,6 +22,13 @@ class Document(SQLModel, table=True):
 	created_at: datetime = Field(default_factory=datetime.now)
 
 	plans: list["ProductPlan"] = Relationship(back_populates="document")
+
+	__table_args__ = (
+		# ⚡ ИНДЕКСЫ ДЛЯ ПРОИЗВОДИТЕЛЬНОСТИ
+		Index('ix_document_year', 'year'),
+		Index('ix_document_file_path', 'file_path'),
+		Index('ix_document_agreement_number', 'agreement_number'),
+	)
 
 	@property
 	def customer_names_list(self) -> list[str]:

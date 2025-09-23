@@ -81,16 +81,16 @@ def preview_document_data(
 
 	# Колонки как в экспорте
 	table.add_column("Файл", style="cyan", width=30)
-	table.add_column("Контрагенты", style="green", width=40)
+	table.add_column("Контрагенты", style="green", width=50)
 	table.add_column("№ соглашения", style="yellow", width=12)
 	table.add_column("Год", style="blue", width=5)
-	table.add_column("Отклонение +/-", style="gold1", width=15)
-	table.add_column("Ошибки", style="red", width=25)
+	table.add_column("Отклонение (-)", style="gold1", width=15)
+	table.add_column("Ошибки", style="red", width=35)
 
 	for doc in documents:
 		# Форматируем данные как в экспорте
-		customer_names = format_string_list(doc.customer_names, default_text="не определен", max_line_length=25)
-		errors = format_string_list(doc.validation_errors, max_line_length=25)
+		customer_names = format_string_list(doc.customer_names, default_text="не определен")
+		errors = format_string_list(doc.validation_errors, max_line_length=30)
 
 		table.add_row(
 			Path(doc.file_path).name,
