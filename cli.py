@@ -12,20 +12,20 @@ from app.services.export import export_to_xls_with_months
 from app.services.files import display_files_tree
 from app.services.parser import main_file_parser
 from app.utils.base import get_current_year
-from app.utils.console import confirm_prompt, console, print_error
+from app.utils.console import confirm_prompt, console, print_error, print_success
 
-app = typer.Typer(help="📄 CLI для парсинга документов")
+app = typer.Typer(help="📄 CLI команды для гибкой работы с данными")
 
 
 @app.command()
 def parse(
-		data_dir: Optional[Path] = typer.Option(None, help="Папка с документами"),
-		year: Optional[int] = typer.Option(None, help="Год для фильтрации"),
+		data_dir: Optional[Path] = typer.Option(None, help="Папка с исходными документами"),
+		year: Optional[int] = typer.Option(get_current_year(), help="Год для выборки данных (по умолчанию: текущий)"),
 		limit: int = typer.Option(settings.MAX_FILES_TO_PROCESS, help="Лимит файлов для обработки (0 = все)"),
 		dry_run: bool = typer.Option(False, help="Тестовый режим без сохранения в БД"),
 		batch_size: int = typer.Option(
 			settings.CONSOLE_OUTPUT_BATCH_SIZE,
-			help="Количество документов для отображения в консоли"
+			help=f"Количество документов для отображения в консоли (по умолчанию: {settings.CONSOLE_OUTPUT_BATCH_SIZE})"
 		)
 ):
 	"""Парсит документы из указанной папки"""
@@ -39,12 +39,12 @@ def parse(
 
 @app.command()
 def export(
-		year: Optional[int] = typer.Option(None, help="Год для экспорта"),
+		year: Optional[int] = typer.Option(get_current_year(), help="Год для экспорта (по умолчанию: текущий)"),
 		output_dir: Optional[Path] = typer.Option(None, help="Папка для экспорта"),
-		limit: int = typer.Option(0, help="Лимит документов для экспорта"),
-		dry_run: bool = typer.Option(False, "--dry-run", help="Предпросмотр без сохранения"),
+		limit: int = typer.Option(0, help="Лимит документов для экспорта (0 = все)"),
+		dry_run: bool = typer.Option(False, "--dry-run", help="Предпросмотр без экспорта данных"),
 		max_per_file: int = typer.Option(
-			None,
+			settings.MAX_DOCUMENTS_PER_EXPORT_FILE,
 			help=f"Максимум документов в файле (по умолчанию: {settings.MAX_DOCUMENTS_PER_EXPORT_FILE})"
 		),
 		force: bool = typer.Option(
@@ -55,28 +55,25 @@ def export(
 ):
 	"""Экспортирует данные в XLSX файл с возможностью разбивки на части"""
 
-	target_year = year or get_current_year()
-	max_per_file = max_per_file or settings.MAX_DOCUMENTS_PER_EXPORT_FILE
-
 	with next(get_db()) as db:
-		documents = get_documents(db, year=target_year, limit=limit or None)
+		documents = get_documents(db, year=year, limit=limit)
 
 		if not documents:
-			print_error(f"Нет документов за {target_year} год")
+			print_error(f"Нет документов за {year} год")
 			return
 
 		# DRY-RUN РЕЖИМ
 		if dry_run:
 			from app.services.preview import preview_export_data
 			console.print("** РЕЖИМ ПРЕДПРОСМОТРА **", style="bold yellow")
-			preview_export_data(list(documents), target_year)
+			preview_export_data(list(documents), year)
 			return
 
-		# РЕАЛЬНЫЙ ЭКСПОРТ (существующая логика)
+		# РЕАЛЬНЫЙ ЭКСПОРТ
 		export_dir = output_dir or settings.EXPORT_DIR
 		export_dir.mkdir(exist_ok=True)
 
-		# Разбиваем на части если нужно (исправлено условие)
+		# Разбиваем на части если документов больше чем указано в ограничении
 		if 0 < max_per_file < len(documents):
 			console.print(f"📦 Разбиваем {len(documents)} документов на части по {max_per_file}", style="yellow")
 			export_paths = []
@@ -87,7 +84,7 @@ def export(
 				postfix = f"-part{part_num:02d}"
 
 				export_path = export_to_xls_with_months(
-					list(batch_docs), target_year, export_dir, postfix, force
+					list(batch_docs), year, export_dir, postfix, force
 				)
 				export_paths.append(export_path)
 				console.print(f"✅ Часть {part_num}: {export_path.name}")
@@ -95,14 +92,20 @@ def export(
 			console.print(f"📊 Всего создано файлов: {len(export_paths)}", style="green")
 			return export_paths
 		else:
-			export_path = export_to_xls_with_months(list(documents), target_year, export_dir, "", force)
-			console.print(f"✅ Экспорт завершен: {export_path}", style="green")
+			export_path = export_to_xls_with_months(list(documents), year, export_dir, "", force)
+
+			console.print("\n" + "=" * 80, style="dim")
+			print_success(f"Экспорт успешно завершен. Сохранено документов: [cyan]{len(documents)}[/cyan]")
+			console.print("📂 Ссылка на файл XLSX:", style="bold")
+			console.print(f"📍 [link=file://{export_path}]{export_path}[/link]", style="blue underline")
+			console.print("=" * 80, style="dim")
+
 			return [export_path]
 
 
 @app.command()
 def errors(
-		year: Optional[int] = typer.Option(None, help="Год для фильтрации"),
+		year: Optional[int] = typer.Option(get_current_year(), help="Год для поиска ошибок (по умолчанию: текущий)"),
 		limit: int = typer.Option(10, help="Лимит документов для показа")
 ):
 	"""Показывает документы с ошибками валидации"""
@@ -126,7 +129,7 @@ def errors(
 
 @app.command()
 def stats(
-		year: Optional[int] = typer.Option(None, help="Год для статистики")
+		year: Optional[int] = typer.Option(get_current_year(), help="Год для получения статистики (по умолчанию: текущий)")
 ):
 	"""Показывает статистику по документам"""
 	with next(get_db()) as db:
@@ -140,17 +143,14 @@ def stats(
 
 
 @app.command()
-def clear_db(
+def clean(
 		confirm: bool = typer.Option(False, "--confirm", help="Подтверждение очистки")
 ):
 	"""Очищает базу данных"""
-	if not confirm:
-		console.print("⚠️  Используйте --confirm для очистки БД", style="yellow")
-		return
-
-	with next(get_db()) as db:
-		deleted_count = delete_all_documents(db)
-		console.print(f"✅ Удалено документов: {deleted_count}", style="green")
+	if not confirm or confirm_prompt("Подтверждаете очистку?", default=False):
+		with next(get_db()) as db:
+			deleted_count = delete_all_documents(db)
+			console.print(f"✅ Удалено документов: {deleted_count}", style="green")
 
 
 if __name__ == "__main__":
