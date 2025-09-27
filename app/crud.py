@@ -1,27 +1,301 @@
 import json
-from typing import Optional, Sequence, Callable, Type
+from typing import Optional, Sequence, Callable, Type, Literal
 
-from sqlalchemy import Select, ColumnElement, func
-from sqlmodel import Session, select, delete
+from sqlalchemy import ColumnElement, func, text, Result
+from sqlalchemy.orm import aliased
+from sqlalchemy.sql.selectable import Select
+from sqlmodel import Session, select, delete, col
 
 from .models import Document, ProductPlan, DocumentCreate
 
 
-def save_document(db: Session, document_data: DocumentCreate) -> Type['Document'] | 'Document':
+def get_documents_with_plans(
+		db: Session,
+		use_raw_sql: bool = False,  # Флаг для выбора реализации
+		**kwargs
+) -> Sequence[tuple[Document, dict[str, list[float | None]]]]:
+	"""
+	Универсальная функция с выбором реализации.
+	"""
+	if use_raw_sql:
+		return get_documents_with_grouped_plans_sql(db, **kwargs)
+	else:
+		return get_documents_with_grouped_plans(db, **kwargs)
+
+
+def get_documents_with_grouped_plans_sql(
+		db: Session,
+		year: Optional[int] = None,
+		skip: int = 0,
+		limit: Optional[int] = None
+) -> list[tuple[Document, dict[str, list[Optional[float]]]]]:
+	"""
+		Максимально оптимизированная версия через RAW SQL.
+		"""
+	# Базовый SQL для документов
+	sql = """
+		SELECT d.*, p.customer_name, p.month, SUM(p.planned_quantity) as total_quantity
+		FROM document d
+		LEFT JOIN productplan p ON d.id = p.document_id
+		"""
+
+	where_conditions = []
+	if year is not None:
+		where_conditions.append(f"d.year = {year}")
+
+	if where_conditions:
+		sql += " WHERE " + " AND ".join(where_conditions)
+
+	sql += """
+		GROUP BY d.id, p.customer_name, p.month
+		ORDER BY d.id, p.customer_name, p.month
+		"""
+
+	if limit is not None:
+		sql += f" LIMIT {limit} OFFSET {skip}"
+
+	result: Result = db.exec(text(sql))
+	rows = result.all()
+
+	# Группируем результаты
+	documents_map = {}
+	for row in rows:
+		doc_id = row[0]
+		if doc_id not in documents_map:
+			# Создаем объект Document из row
+			document = Document(
+				id=row[0],
+				file_path=row[1],
+				agreement_number=row[2],
+				year=row[3],
+				customer_names=row[4],
+				allowed_deviation=row[5],
+				validation_errors=row[6],
+				created_at=row[7]
+			)
+			documents_map[doc_id] = (document, {})
+
+		document, customer_plans = documents_map[doc_id]
+		customer_key = row[8] or "all"  # customer_name
+		month = row[9]  # month
+		quantity = row[10]  # total_quantity
+
+		if customer_key not in customer_plans:
+			customer_plans[customer_key] = [None] * 12
+
+		if 1 <= month <= 12 and quantity is not None:
+			customer_plans[customer_key][month - 1] = quantity
+
+	return list(documents_map.values())
+
+
+def get_documents_with_grouped_plans(
+		db: Session,
+		year: Optional[ColumnElement[int] | int] = None,
+		skip: int = 0,
+		limit: Optional[int] = None
+) -> Sequence[tuple[Document, dict[str, list[Optional[float]]]]]:
+	"""
+	Оптимизированное получение документов с группированными планами по покупателям.
+	Args:
+		db: Сессия базы данных
+		year: Фильтр по году (опционально)
+		skip: Количество пропускаемых записей
+		limit: Ограничение количества записей
+
+	Returns:
+		Список кортежей (документ, {покупатель: [планы по месяцам]})
+	"""
+	subquery = select(Document.id)
+
+	if year is not None:
+		subquery = subquery.where(col(Document.year) == year)
+
+	subquery = subquery.offset(skip)
+
+	if limit is not None:
+		subquery = subquery.limit(limit)
+
+	subquery = subquery.subquery()
+	subquery_alias = aliased(subquery)
+
+	# Основной запрос с агрегацией
+	stmt = (
+		select(
+			Document,
+			ProductPlan.customer_name,
+			ProductPlan.month,
+			func.sum(ProductPlan.planned_quantity).label("total")
+		)
+		.join(ProductPlan, col(Document.id) == col(ProductPlan.document_id))  # Используем col()
+		.where(col(Document.id).in_(select(subquery_alias.c.id)))  # Правильный синтаксис
+		.group_by(col(Document.id), col(ProductPlan.customer_name), col(ProductPlan.month))
+		.order_by(col(Document.id), col(ProductPlan.customer_name), col(ProductPlan.month))
+	)
+
+	rows = db.exec(stmt).all()
+
+	# Группируем результаты по документам
+	docs_dict: dict[int, tuple[Document, dict[str, list[Optional[float]]]]] = {}
+
+	for doc, customer, month, total in rows:
+		if doc.id not in docs_dict:
+			docs_dict[doc.id] = (doc, {})
+
+		_, plans_summary = docs_dict[doc.id]
+		customer_key = customer or "all"
+
+		if customer_key not in plans_summary:
+			plans_summary[customer_key] = [None] * 12
+
+		if 1 <= month <= 12 and total is not None:
+			month_index = month - 1
+			plans_summary[customer_key][month_index] = total
+
+	return list(docs_dict.values())
+
+
+def get_document_with_plans(
+		db: Session,
+		document_id: int
+) -> Document | None:
+	"""
+	Получает один документ с группированными планами.
+
+	Args:
+		db: Сессия базы данных
+		document_id: ID документа
+
+	Returns:
+		Кортеж (документ, группированные планы) или None если документ не найден
+	"""
+
+	from sqlalchemy.orm import selectinload
+
+	query: Select = select(Document).where(Document.id == document_id).options(selectinload(Document.plans))
+	document: Optional[Document] = db.exec(query).first()
+
+	if document is None:
+		return None
+
+	document.plans = document.get_plans_summary()
+
+	return document
+
+
+def get_documents(
+		db: Session,
+		year: Optional[int] = None,
+		skip: int = 0,
+		limit: Optional[int] = None
+) -> Sequence[Document]:
+	"""
+	Получает документы с планами.
+	Args:
+		db: Сессия базы данных
+		year: Фильтр по году (опционально)
+		skip: Количество пропускаемых записей
+		limit: Ограничение количества записей
+
+	Returns:
+		Список документов
+	"""
+	query = select(Document)
+
+	if year is not None:
+		query = query.where(Document.year == year)
+
+	query = query.offset(skip)
+
+	if limit is not None:
+		query = query.limit(limit)
+
+	documents = db.exec(query).all()
+
+	# Загружаем планы для каждого документа
+	for document in documents:
+		db.refresh(document)
+
+	return documents
+
+
+def get_document_by_slug(db: Session, slug: str) -> Optional['Document']:
+	"""
+	Находит документ по пути к файлу.
+	"""
+	query: Select = select(Document).where(Document.slug == slug)
+	return db.exec(query).first()
+
+
+def get_years_in_documents(db: Session):
+	return db.exec(select(Document.year).distinct()).scalar().all()
+
+
+def get_documents_count(
+		db: Session,
+		year: Optional[ColumnElement[int] | int] = None
+) -> int:
+	"""Возвращает количество документов."""
+	query = select(func.count()).select_from(Document)
+
+	if year is not None:
+		query = query.where(Document.year == year)
+
+	result = db.scalar(query)
+	return result if result is not None else 0
+
+
+def get_documents_with_errors(
+		db: Session,
+		year: Optional[ColumnElement[int]] = None,
+		limit: Optional[int] = None
+) -> Sequence['Document']:
+	"""
+	Получает документы с ошибками валидации.
+	"""
+	query: Select = select(Document).where(Document.validation_errors != None)
+
+	# Добавляем фильтр по году если указан
+	if year is not None:
+		query = query.where(Document.year == year)
+
+	if limit is not None:
+		query = query.limit(limit)
+
+	documents: Sequence[Document] = db.exec(query).all()
+
+	# Загружаем связанные с документом планы
+	for document in documents:
+		db.refresh(document)
+
+	return documents
+
+
+def save_document(
+		db: Session,
+		document_data: 'DocumentCreate'
+) -> tuple[Type['Document'] | 'Document', Literal['created', 'updated']]:
 	"""
 	Сохраняет или обновляет документ по его file_path.
 	Если документ с таким путем уже существует - обновляет его.
 	Если нет - создает новый.
-	"""
-	# Ищем существующий документ
-	existing_doc = get_document_by_file_path(db, str(document_data.file_path))
 
-	if existing_doc:
-		# Обновляем существующий документ
-		return update_document(db, existing_doc.id, document_data)
-	else:
-		# Создаем новый документ
-		return create_document(db, document_data)
+	Возвращает:
+		кортеж (объект документа и статус: 'created' или 'updated')
+	"""
+
+	try:
+		# First try to find by slug
+		existing_doc = get_document_by_slug(db, document_data.slug)
+
+		if existing_doc:
+			return update_document(db, existing_doc.id, document_data), "updated"
+		else:
+			return create_document(db, document_data), "created"
+
+	except Exception as e:
+		db.rollback()  # Rollback в случае ошибки
+		raise  # Пробрасываем исключение дальше
 
 
 def create_document(db: Session, document_data: 'DocumentCreate') -> 'Document':
@@ -29,6 +303,7 @@ def create_document(db: Session, document_data: 'DocumentCreate') -> 'Document':
 
 	db_document = Document(
 		file_path=document_data.file_path,
+		slug=document_data.slug,
 		agreement_number=document_data.agreement_number,
 		customer_names=json.dumps(document_data.customer_names) if document_data.customer_names else None,
 		year=document_data.year,
@@ -91,63 +366,6 @@ def update_document(
 	return db_document
 
 
-def get_document_by_file_path(db: Session, file_path: str) -> Optional['Document']:
-	"""
-	Находит документ по пути к файлу.
-	"""
-	query: Select = select(Document).where(Document.file_path == file_path)
-	return db.exec(query).first()
-
-
-def get_documents(
-		db: Session,
-		year: Optional[int] = None,
-		skip: int = 0,
-		limit: Optional[int] = None
-) -> Sequence[Document]:
-	"""
-	Получает документы со списком помесячных планов.
-	"""
-	query = select(Document)
-
-	if year is not None:
-		query = query.where(Document.year == year)
-
-	query = query.offset(skip)
-
-	if limit is not None:
-		query = query.limit(limit)
-
-	documents = db.exec(query).all()
-
-	# Загружаем планы для каждого документа
-	for document in documents:
-		db.refresh(document)
-
-	return documents
-
-
-def get_documents_by_range(db: Session, year: Optional[int] = None, range_str: str = None):
-	"""Получает документы по диапазону"""
-	query = select(Document)
-
-	if year:
-		query = query.where(Document.year == year)
-
-	if range_str:
-		if "-" in range_str:
-			start, end = map(lambda x: int(x) if x else None, range_str.split("-"))
-			if start:
-				query = query.offset(start - 1)
-			if end:
-				query = query.limit(end - (start or 0))
-		else:
-			# single number
-			query = query.limit(int(range_str))
-
-	return db.exec(query).all()
-
-
 def bulk_save_documents(db: Session, documents_data: list['DocumentCreate'], update_mode: bool = False) -> int:
 	"""
 	Массовое сохранение документов с поддержкой режимов обновления.
@@ -165,7 +383,7 @@ def bulk_save_documents(db: Session, documents_data: list['DocumentCreate'], upd
 
 	for doc_data in documents_data:
 		try:
-			existing = get_document_by_file_path(db, str(doc_data.file_path))
+			existing = get_document_by_slug(db, str(doc_data.slug))
 			if existing:
 				if update_mode:
 					update_document(db, existing.id, doc_data)
@@ -179,96 +397,6 @@ def bulk_save_documents(db: Session, documents_data: list['DocumentCreate'], upd
 
 	db.commit()
 	return saved_count
-
-
-def get_documents_with_plans(
-		db: Session,
-		year: Optional[int] = None,
-		skip: int = 0,
-		limit: Optional[int] = None
-) -> list[tuple[Document, dict[str | None, list[None]]]]:
-	"""
-	Получает документы с группированными планами по покупателям.
-	Возвращает список кортежей (документ, {покупатель: [месячные_планы]})
-	"""
-	query = select(Document)
-
-	if year is not None:
-		query = query.where(Document.year == year)
-
-	query = query.offset(skip)
-
-	if limit is not None:
-		query = query.limit(limit)
-
-	documents = db.exec(query).all()
-
-	results = []
-	for document in documents:
-		db.refresh(document)  # Загружаем связанные планы
-
-		# Группируем планы по покупателям и месяцам
-		customer_plans = {}
-		for plan in document.plans:
-			customer_key = plan.customer_name or "Все покупатели"
-			if customer_key not in customer_plans:
-				customer_plans[customer_key] = [None] * 12
-
-			if 1 <= plan.month <= 12 and plan.planned_quantity is not None:
-				month_index = plan.month - 1
-				# инициализируем и суммируем
-				if customer_plans[customer_key][month_index] is None:
-					customer_plans[customer_key][month_index] = plan.planned_quantity
-				else:
-					customer_plans[customer_key][month_index] += plan.planned_quantity
-
-		results.append((document, customer_plans))
-
-	return results
-
-
-def get_years_in_documents(db: Session):
-	return db.exec(select(Document.year).distinct()).scalar().all()
-
-
-def get_documents_count(
-		db: Session,
-		year: Optional[ColumnElement[int] | int] = None
-) -> int:
-	"""Возвращает количество документов."""
-	query = select(func.count()).select_from(Document)
-
-	if year is not None:
-		query = query.where(Document.year == year)
-
-	result = db.scalar(query)
-	return result if result is not None else 0
-
-
-def get_documents_with_errors(
-		db: Session,
-		year: Optional[ColumnElement[int]] = None,
-		limit: Optional[int] = None
-) -> Sequence['Document']:
-	"""
-	Получает документы с ошибками валидации.
-	"""
-	query: Select = select(Document).where(Document.validation_errors != None)
-
-	# Добавляем фильтр по году если указан
-	if year is not None:
-		query = query.where(Document.year == year)
-
-	if limit is not None:
-		query = query.limit(limit)
-
-	documents: Sequence[Document] = db.exec(query).all()
-
-	# Загружаем связанные с документом планы
-	for document in documents:
-		db.refresh(document)
-
-	return documents
 
 
 def delete_documents_by_year(db: Session, year: Optional[int] = None) -> int | Callable[[], int]:

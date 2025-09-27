@@ -7,14 +7,15 @@ from pathlib import Path
 
 from app import crud
 from app.config import settings
+from app.crud import get_documents_with_grouped_plans
 from app.db import init_db, get_db
-from app.services.export import export_to_xls_with_months
-from app.services.files import display_files_tree
+from app.services.export import export_plans_to_xls
+from app.services.files import display_files_tree, convert_file_to_text
 from app.services.parser import DocumentParser
-from app.services.preview import preview_document_data
+from app.services.preview import preview_document_info, preview_document_plans, paginated_preview, preview_documents_details
 from app.services.tables import print_formatted_table
-from app.utils.base import get_current_year, extract_data_from_file
-from app.utils.console import console
+from app.utils.base import get_current_year, format_string_list
+from app.utils.console import console, print_error
 
 
 def step1_find_files():
@@ -35,13 +36,22 @@ def step2_convert_to_text(files):
 	if not files:
 		return
 
+	# Выбор года
+	year_input = input("Введите год (оставьте пустым для текущего года): ").strip()
+
+	try:
+		year = int(year_input) if year_input else get_current_year()
+	except ValueError:
+		print("❌ Неверный формат года")
+		return
+
 	for i, file_path in enumerate(files, 1):
 		print(f"\n📄 Файл {i}: {file_path.name}")
 		print("-" * 60)
 
 		try:
 			# 1. Извлекаем текст с таблицами
-			text, tables = extract_data_from_file(file_path)
+			text, tables = convert_file_to_text(file_path, year)
 
 			if text:
 				preview = text[:450] + "..." if len(text) > 400 else text
@@ -50,12 +60,11 @@ def step2_convert_to_text(files):
 			if tables:
 				print(f"   📊 Найдено таблиц: {len(tables)}\n")
 				# Дополнительная информация о таблицах
-				for table_idx, table_info in enumerate(tables, 1):
-					table_data = table_info['data']
+				for table_idx, table_data in enumerate(tables, 1):
 					print(f"   📋 ТАБЛИЦА {table_idx}")
 					print(f"   📏 Размер: {len(table_data)}×{len(table_data[0]) if table_data else 0}")
-					print(f"   📋 Источник: {table_info.get('source', 'unknown')}")
-					print_formatted_table(table_data, f"ТАБЛИЦА {table_idx}", max_col_width=30)
+					print(f"   📋 Источник: {file_path.name}")
+					print_formatted_table(table_data, f"ТАБЛИЦА {table_idx}", max_col_width=15)
 			else:
 				print("   📊 Таблицы: не обнаружено")
 
@@ -73,10 +82,10 @@ def step4_parse_documents(files, with_save=False):
 		return
 
 	# Выбор года
-	year_input = input("Введите год (оставьте пустым для всех лет): ").strip()
+	year_input = input("Введите год (оставьте пустым для текущего года): ").strip()
 
 	try:
-		year = int(year_input) if year_input else None
+		year = int(year_input) if year_input else get_current_year()
 	except ValueError:
 		print("❌ Неверный формат года")
 		return
@@ -85,33 +94,35 @@ def step4_parse_documents(files, with_save=False):
 
 	with next(get_db()) as db:
 		for i, file_path in enumerate(files, 1):
-			print(f"\n📄 Файл {i}: {file_path.name}")
-			print("-" * 60)
+			print(f"\n📄 [{i}]: {file_path.name}")
 
 			try:
 				# Парсим документ
-				data = extract_data_from_file(file_path)
+				data = convert_file_to_text(file_path)
 				if not data:
 					return None
 
 				document_data = parser.parse_document(str(file_path.name), data, year)
 
 				if document_data:
-					print(f"✅ Документ успешно распарсен {'с сохранением в БД' if with_save else 'без сохранения'}!")
-					print(f"Контрагенты: {document_data.customer_names}")
-					preview_table = preview_document_data([document_data])
-					console.print(preview_table)
+					if document_data.validation_errors:
+						print_error(f"Документ некорректно распарсен. Ошибки: {document_data.validation_errors}")
+					else:
+						if with_save:
+							# Сохраняем в БД
+							document, status = crud.save_document(db, document_data)
+							if status == "created":
+								status = f"(💾 Создано)"
+							else:
+								status = f"(Обновлено)"
+						else:
+							status = ""
 
-					if with_save:
-						# Проверяем, не обработан ли уже файл
-						existing = crud.get_document_by_file_path(db, str(file_path))
-						if existing:
-							print(f"⏭️  Уже обработан и сохранен ранее (ID: {existing.id})")
-							continue
-
-						# Сохраняем в БД
-						document = crud.save_document(db, document_data)
-						print(f"💾 Сохранено в БД с ID: {document.id}")
+						table_title = f"👥 Контрагенты: {format_string_list(document_data.customer_names).upper()} {status}"
+						console.print(table_title, style="dim")
+						preview_document_info(document_data, title="")
+						summary = document_data.get_plans_summary()
+						preview_document_plans(summary)
 
 				else:
 					print("❌ Не удалось распарсить документ")
@@ -146,13 +157,12 @@ def step5_view_documents():
 		print("❌ Неверный формат числа")
 		return
 
-	with next(get_db()) as db:
-		# Получаем документы с суммированными планами
-		documents = crud.get_documents(db, year=year, limit=limit)
-
-		print(f"📊 Документов за {year} год: {len(documents)}")
-
-		console.print(preview_document_data(documents=list(documents)))
+	paginated_preview(
+		title=f" Детальный просмотр сохраненных документов за {year}",
+		func=preview_documents_details,
+		year=year,
+		limit=limit
+	)
 
 
 def step6_all_steps():
@@ -235,7 +245,7 @@ def step8_export_to_xls():
 		documents = crud.get_documents(db, year=year)
 
 		# Вызываем функцию экспорта
-		export_file_path = export_to_xls_with_months(list(documents), year)
+		export_file_path = export_plans_to_xls(list(documents), year)
 
 		# Проверяем, что файл создался
 		assert export_file_path.exists(), "XLS файл не был создан"

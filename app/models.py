@@ -1,18 +1,19 @@
-import re
 import json
+import re
+from datetime import datetime
+from typing import Optional
 
+from pydantic import BaseModel, field_validator
 from sqlalchemy import Index
 from sqlmodel import SQLModel, Field, Relationship
-from typing import Optional
-from datetime import datetime
-from pydantic import BaseModel, field_validator
 
-from app.utils.base import get_current_year
+from app.utils.base import get_current_year, slugify_filename
 
 
 # Таблицы БД
 class Document(SQLModel, table=True):
 	id: Optional[int] = Field(default=None, primary_key=True)
+	slug: str = Field(default=None)
 	file_path: str = Field(unique=True)
 	agreement_number: Optional[str] = Field(index=True)
 	year: int = Field(default_factory=get_current_year)
@@ -24,11 +25,29 @@ class Document(SQLModel, table=True):
 	plans: list["ProductPlan"] = Relationship(back_populates="document")
 
 	__table_args__ = (
-		# ⚡ ИНДЕКСЫ ДЛЯ ПРОИЗВОДИТЕЛЬНОСТИ
 		Index('ix_document_year', 'year'),
 		Index('ix_document_file_path', 'file_path'),
-		Index('ix_document_agreement_number', 'agreement_number'),
 	)
+
+	def get_plans_summary(self) -> dict[str, list[Optional[float]]]:
+		"""
+		Возвращает сводку планов в виде {customer_name: [янв, фев, ..., дек]}
+		"""
+		summary = {}
+
+		# Сортируем планы по году и месяцу
+		sorted_plans = sorted(self.plans, key=lambda x: (x.year, x.month))
+
+		for plan in sorted_plans:
+			customer_key = plan.customer_name or "all"
+
+			if customer_key not in summary:
+				summary[customer_key] = [None] * 12
+
+			if 1 <= plan.month <= 12 and plan.planned_quantity is not None:
+				summary[customer_key][plan.month - 1] = plan.planned_quantity
+
+		return summary
 
 	@property
 	def customer_names_list(self) -> list[str]:
@@ -55,6 +74,33 @@ class Document(SQLModel, table=True):
 		"""Проверяет наличие ошибок валидации"""
 		return bool(self.validation_errors_list)
 
+
+class ProductPlan(SQLModel, table=True):
+	id: Optional[int] = Field(default=None, primary_key=True)
+	month: int
+	year: int
+	planned_quantity: Optional[float]
+	customer_name: Optional[str]  # Конкретный покупатель для этого плана
+
+	document_id: int = Field(foreign_key="document.id")
+	document: Document = Relationship(back_populates="plans")
+
+	# Сортируем по году и месяцу
+	class Config:
+		arbitrary_types_allowed = True
+
+
+# Pydantic модели
+class DocumentCreate(BaseModel):
+	file_path: str
+	slug: str
+	agreement_number: Optional[str] = None
+	year: int = get_current_year()
+	customer_names: list[str] = []
+	allowed_deviation: Optional[str] = None  # Допустимое отклонение от плана
+	validation_errors: list[str] = []
+	plans: list['ProductPlanCreate'] = []
+
 	def get_plans_summary(self) -> dict[str, list[Optional[float]]]:
 		"""
 		Возвращает сводку планов в виде {customer_name: [янв, фев, ..., дек]}
@@ -75,36 +121,17 @@ class Document(SQLModel, table=True):
 
 		return summary
 
-
-class ProductPlan(SQLModel, table=True):
-	id: Optional[int] = Field(default=None, primary_key=True)
-	month: int
-	year: int
-	planned_quantity: Optional[float]
-	customer_name: Optional[str]  # Конкретный покупатель для этого плана
-
-	document_id: int = Field(foreign_key="document.id")
-	document: Document = Relationship(back_populates="plans")
-
-	# Сортируем по году и месяцу
-	class Config:
-		arbitrary_types_allowed = True
-
-
-# Pydantic модели
-class DocumentCreate(BaseModel):
-	file_path: str
-	agreement_number: Optional[str] = None
-	year: int = get_current_year()
-	customer_names: list[str] = []
-	allowed_deviation: Optional[str] = None  # Допустимое отклонение от плана
-	validation_errors: list[str] = []
-	plans: list['ProductPlanCreate'] = []
-
-	@field_validator('agreement_number')
+	@field_validator('agreement_number', mode='before')
 	def clean_agreement_number(cls, v):
 		if v and isinstance(v, str):
 			return re.sub(r'[\s«»"]', '', v)
+		return v
+
+	@field_validator('slug', mode='before')
+	def normalize_file_path(cls, v):
+		"""Автоматически нормализует file_path и превращает его в slug перед сохранением."""
+		if isinstance(v, str):
+			return slugify_filename(v)
 		return v
 
 	@field_validator('customer_names', mode='before')
@@ -122,3 +149,4 @@ class ProductPlanCreate(BaseModel):
 	year: int
 	planned_quantity: Optional[float] = None
 	customer_name: Optional[str] = None
+

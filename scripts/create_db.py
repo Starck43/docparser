@@ -30,13 +30,13 @@ def create_database():
     db_path = Path(settings.DATABASE_URL.replace("sqlite:///", ""))
     
     if db_path.exists():
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 60)
         print("⚠️ ВНИМАНИЕ: БАЗА ДАННЫХ УЖЕ СУЩЕСТВУЕТ!")
         print(f"Путь к базе данных: {db_path}")
         print("Все существующие данные будут удалены!")
-        print("=" * 70)
+        print("=" * 60)
 
-        if confirm_prompt("Будут удалены все существующие данные. Продолжить?", default=False):
+        if not confirm_prompt("Будут удалены все существующие данные. Продолжить?", default=False):
             console.print("\nОтменено пользователем.")
             sys.exit(0)
     

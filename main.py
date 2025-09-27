@@ -1,9 +1,10 @@
 from app.config import settings
-from app.crud import get_documents
+from app.crud import get_documents, get_documents_with_grouped_plans
 from app.db import get_db
-from app.services.export import export_to_xls_with_months
+from app.services.export import export_plans_to_xls, export_documents_to_file
 from app.services.files import display_files_tree
 from app.services.parser import main_file_parser
+from app.services.preview import paginated_preview, preview_documents_details
 from app.utils.base import get_current_year
 from app.utils.console import (confirm_prompt, console, print_success, print_warning, select_directory, print_error)
 
@@ -38,49 +39,36 @@ def run_parsing() -> int:
 
 
 def run_preview():
-	with next(get_db()) as db:
-		target_year = get_current_year()
-		documents = get_documents(db, year=target_year)
+	"""Просмотр помесячных планов закупок за текущий год"""
 
-		if not documents:
-			print_error(f"Нет документов за {target_year} год")
-			return
-
-		from app.services.preview import preview_export_data
-		console.print(f"Просмотр сохраненных данных за {target_year} год", style="green")
-		preview_export_data(list(documents), target_year)
-		return
+	year = get_current_year()
+	paginated_preview(
+		title=f" Детальный просмотр сохраненных документов за {year}",
+		func=preview_documents_details,
+		year=year
+	)
 
 
 def run_export():
 	"""Выполняет экспорт данных за текущий год"""
-	console.print("💾 Выбор папки для экспорта:", style="bold")
-	export_dir = select_directory(settings.EXPORT_DIR, create_if_not_exists=True)
-	if not export_dir:
+
+	console.print("💾 Выбор папки для экспорта", style="bold")
+	output_dir = select_directory(settings.EXPORT_DIR, create_if_not_exists=True)
+	if not output_dir:
 		return
 
 	year = get_current_year()
-	with next(get_db()) as db:
-		documents = get_documents(db, year=year)
-		if not documents:
-			print_warning(f"Нет документов за {year} год")
-			return
-
-		export_path = export_to_xls_with_months(list(documents), year, export_dir)
-		abs_path = export_path.absolute()
-
-		print_success(f"Экспорт успешно завершен. Сохранено документов: [cyan]{len(documents)}[/cyan]")
-
-		console.print("\n" + "=" * 80, style="dim")
-		console.print("📂 Ссылка для открытия файла:", style="bold")
-		console.print(f"📍 [link=file://{abs_path}]{abs_path}[/link]", style="blue underline")
-		console.print("=" * 80, style="dim")
+	export_documents_to_file(
+		year=year,
+		output_dir=output_dir,
+		title=f"Экспорт помесячных планов закупок за {year} год"
+	)
 
 
 def main():
-	console.print("\n" + "=" * 80, style="dim")
-	console.print("📄 Сбор информации из файлов и экспорт данных", style="bold green")
-	console.print("=" * 80, style="dim")
+	console.print("\n" + "=" * 45, style="dim")
+	console.print("📄 Сбор информации из файлов и экспорт данных", style="bold blue")
+	console.print("=" * 45, style="dim")
 
 	while True:
 		# Интерактивное меню с questionary (если установлен)

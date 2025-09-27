@@ -4,15 +4,16 @@ from typing import Optional
 import typer
 
 from app.config import settings
+from app.crud import (
+	get_documents_count, delete_all_documents, delete_documents_by_year, get_documents_with_errors
+)
 from app.db import get_db
-from app.services.export import export_to_xls_with_months
+from app.services.export import export_documents_to_file
 from app.services.files import display_files_tree
 from app.services.parser import main_file_parser
+from app.services.preview import paginated_preview, preview_documents_details
 from app.utils.base import format_string_list, parse_range_string, get_current_year
-from app.utils.console import confirm_prompt, console, print_error, print_success, print_warning
-from app.crud import (
-	get_documents, get_documents_count, delete_all_documents, delete_documents_by_year, get_documents_with_errors
-)
+from app.utils.console import confirm_prompt, console, print_error, print_success, print_warning, print_table
 
 app = typer.Typer(help="📄 CLI команды для гибкой работы с данными")
 
@@ -29,7 +30,7 @@ def get_common_cli_params(
 	"""Общие параметры для парсинга"""
 	return {
 		'year': year or get_current_year(),
-		'range_str': range_str,
+		'range_str': range_str or settings.MAX_FILES_TO_PROCESS or 'all',
 		'limit': limit or settings.MAX_FILES_TO_PROCESS,
 		'batch_size': batch_size or settings.CONSOLE_OUTPUT_BATCH_SIZE,
 		'rows_per_file': rows_per_file or settings.MAX_DOCUMENTS_PER_EXPORT_FILE,
@@ -45,15 +46,21 @@ def parse(
 			help=f"Папка с исходными документами (по умолчанию: {settings.DATA_DIR})"
 		),
 		year: Optional[int] = typer.Option(None, help="Год для выборки данных (по умолчанию: текущий)"),
-		limit: int = typer.Option(None, help="Лимит файлов для обработки (0 = все)"),
+		limit: int = typer.Option(
+			None,
+			help=f"Лимит файлов для обработки (по умолчанию: {settings.MAX_FILES_TO_PROCESS or 'нет'})"
+		),
 		dry_run: bool = typer.Option(False, help="Тестовый режим без сохранения в БД"),
 		batch_size: int = typer.Option(
 			None,
-			help=f"Количество документов для отображения в консоли (по умолчанию {settings.CONSOLE_OUTPUT_BATCH_SIZE})"
+			help=f"Количество документов для отображения в консоли (по умолчанию: {settings.CONSOLE_OUTPUT_BATCH_SIZE})"
 		),
 		force_update: bool = typer.Option(
 			False,
-			help="Всегда перезаписывать существующие данные или пропускать (по умолчанию: пропускать)"
+			help=(
+					f"Всегда перезаписывать существующие данные или пропускать "
+					f"(по умолчанию: {'' if settings.REWRITE_FILE_ON_CONFLICT else 'не '}перезаписывать)"
+			)
 		)
 ):
 	"""Парсит документы из указанной папки"""
@@ -65,7 +72,7 @@ def parse(
 		return
 
 	if dry_run:
-		print_warning("*** РЕЖИМ БЕЗ СОХРАНЕНИЯ ***")
+		print_warning("*** РЕЖИМ ПАРСИНГА БЕЗ СОХРАНЕНИЯ В БД ***")
 
 	if confirm_prompt("Продолжить парсинг?", default=True):
 		main_file_parser(
@@ -80,31 +87,35 @@ def parse(
 @app.command()
 def preview(
 		year: Optional[int] = typer.Option(None, help="Год для просмотра (по умолчанию: текущий)"),
-		range_str: str = typer.Option("1-10", "--range", help="Диапазон документов: 1-10, :20, all"),
+		range_str: str = typer.Option(
+			None,
+			"--range",
+			help=f"Диапазон: 1-100, 50-, 0:100, :200, 100: (по умолчанию: {settings.MAX_FILES_TO_PROCESS or 'нет'})"
+		),
+		batch_size: int = typer.Option(
+			None,
+			help=f"Количество документов для отображения в консоли (по умолчанию: {settings.CONSOLE_OUTPUT_BATCH_SIZE})"
+		),
+
 ):
 	"""Просмотр сохраненных документов"""
 
-	params = get_common_cli_params(year=year)
+	params = get_common_cli_params(range_str, year=year, batch_size=batch_size)
 
-	with next(get_db()) as db:
-		total_count = get_documents_count(db, year=params['year'])
+	try:
+		offset, limit = parse_range_string(params['range_str'])
+	except ValueError as e:
+		print_error(str(e))
+		return
 
-		# Получаем документы по диапазону
-		try:
-			offset, limit = parse_range_string(range_str, total_count)
-		except ValueError as e:
-			print_error(str(e))
-			return
-
-		documents = get_documents(db, year=params['year'], skip=offset, limit=limit)
-
-		if not documents:
-			print_error(f"Нет документов за {params['year']} год")
-			return
-
-		from app.services.preview import preview_export_data
-		console.print(f"Просмотр сохраненных данных за {params['year']} год", style="green")
-		preview_export_data(list(documents), params['year'])
+	paginated_preview(
+		title=f" Детальный просмотр сохраненных документов за {params['year']}",
+		func=preview_documents_details,
+		batch_size=params['batch_size'],
+		year=params['year'],
+		skip=offset,
+		limit=limit,
+	)
 
 
 @app.command()
@@ -113,16 +124,26 @@ def export(
 			settings.EXPORT_DIR,
 			help=f"Папка для экспорта (по умолчанию: {settings.EXPORT_DIR})"
 		),
-		year: Optional[int] = typer.Option(None, help="Год для экспорта"),
-		range_str: str = typer.Option("all", '--range', help="Диапазон: all, 1-100, 50-, 0:100, :200, 100:"),
+		year: Optional[int] = typer.Option(None, help="Год для экспортных данных (по умолчанию: текущий)"),
+		range_str: str = typer.Option(
+			None,
+			'--range',
+			help=f"Диапазон: 1-100, 50-, 0:100, :200, 100: (по умолчанию: {settings.MAX_FILES_TO_PROCESS or 'нет'})"
+		),
 		dry_run: bool = typer.Option(False, help="Предпросмотр без экспорта данных"),
 		rows_per_file: int = typer.Option(
 			0,
-			help=f"Максимум строк в одном файле (0 - все в одном файле)"
+			help=(
+					f"Лимит сохраняемых строк в одном файле "
+					f"(по умолчанию: {settings.MAX_DOCUMENTS_PER_EXPORT_FILE or 'без ограничения'})"
+			)
 		),
 		force_update: bool = typer.Option(
 			False,
-			help="Принудительная перезапись существующих файлов (по умолчанию: не перезаписывать и создавать новый)"
+			help=(
+					f"Принудительная перезапись существующих файлов "
+					f"(по умолчанию: {'' if settings.REWRITE_FILE_ON_CONFLICT else 'не '}перезаписывать)"
+			)
 		)
 ):
 	"""Экспортирует данные в XLSX файл с возможностью разбивки на части"""
@@ -134,70 +155,41 @@ def export(
 		force_update=force_update
 	)
 
-	with next(get_db()) as db:
-		if not params['range_str']:
-			documents = get_documents(db, params['year'])
+	year = params['year']
+	range_str = params["range_str"]
+	rows_per_file = params['rows_per_file']
 
-		else:
-			# ⚡ Парсим диапазон в offset/limit
-			total_count = get_documents_count(db, year=params['year'])
-			offset, limit = parse_range_string(params['range_str'], total_count)
+	try:
+		offset, limit = parse_range_string(range_str)
 
-			# ⚡ Используем существующую функцию с offset/limit
-			documents = get_documents(db, year=params['year'], skip=offset, limit=limit)
+	except ValueError as e:
+		print_error(str(e))
+		return
 
-		if not documents:
-			range_message = f"в диапазоне: {offset}-{limit}" if params["range_str"] else ""
-			print_error(f"Не найдено документов за {params['year']} год {range_message}")
-			return
+	# DRY-RUN РЕЖИМ ПРОСМОТРА
+	if dry_run:
+		from app.services.preview import preview_summary_plans_list
+		print_warning("*** РЕЖИМ ПРЕДПРОСМОТРА ***")
 
-		# DRY-RUN РЕЖИМ
-		if dry_run:
-			from app.services.preview import preview_export_data
-			print_warning("*** РЕЖИМ ПРЕДПРОСМОТРА ***")
-			preview_export_data(list(documents), params['year'])
-			return
+		paginated_preview(
+			title=f"Просмотр помесячных планов закупок за {year} год",
+			func=preview_summary_plans_list,
+			year=year,
+			skip=offset,
+			limit=limit,
+		)
+		return
 
-		# РЕАЛЬНЫЙ ЭКСПОРТ
-		output_dir.mkdir(exist_ok=True)
-
-		# Разбиваем на части если нужно
-		if 0 < params['rows_per_file'] < len(documents):
-			console.print(
-				f"📦 Разбиваем {len(documents)} документов на части по {params['rows_per_file']}",
-				style="yellow"
-			)
-			export_paths = []
-
-			for i in range(0, len(documents), params['rows_per_file']):
-				batch_docs = documents[i:i + params['rows_per_file']]
-				part_num = i // params['rows_per_file'] + 1
-				postfix = f"-part{part_num:02d}"
-
-				export_path = export_to_xls_with_months(
-					list(batch_docs),
-					params['year'],
-					output_dir,
-					postfix,
-					params['force_update']
-				)
-				export_paths.append(export_path)
-				print_success(f"Часть {part_num}: {export_path.name}")
-
-			print_success(f"Всего создано файлов: {len(export_paths)}")
-			return export_paths
-		else:
-			export_path = export_to_xls_with_months(
-				list(documents), params['year'], params['output_dir'], "", params['force']
-			)
-
-			console.print("\n" + "=" * 80, style="dim")
-			print_success(f"Экспорт успешно завершен. Сохранено документов: {len(documents)}")
-			console.print("📂 Ссылка на файл XLSX:", style="bold")
-			console.print(f"📍 [link=file://{export_path}]{export_path}[/link]", style="blue underline")
-			console.print("=" * 80, style="dim")
-
-			return [export_path]
+	# РЕАЛЬНЫЙ ЭКСПОРТ
+	export_documents_to_file(
+		title=f"Экспорт помесячных планов закупок за {year} год",
+		year=year,
+		output_dir=output_dir,
+		rows_per_file=rows_per_file,
+		force_update=params['force_update'],
+		offset=offset,
+		limit=limit,
+	)
 
 
 @app.command()
@@ -214,7 +206,6 @@ def errors(
 			print_success("Ошибки не обнаружены!")
 			return
 
-		from app.utils.console import print_table
 		table = print_table("📋 Документы с ошибками", Файл="cyan", Ошибки="red")
 
 		for doc in error_docs:
@@ -243,24 +234,36 @@ def stats(
 @app.command()
 def clean(
 		year: Optional[int] = typer.Option(None, help="Год для очистки данных (по умолчанию: текущий)"),
-		full_clean: bool = typer.Option(False, help="Подтверждение полной очистки всех данных"),
-		confirm: bool = typer.Option(False, help="Подтверждение процедуры удаления без предупреждения")
+		full_clean: bool = typer.Option(False, help="Полная очистка всех данных за все годы (по умолчанию: спросить)"),
+		no_confirm: bool = typer.Option(False, "--no-confirm", help="Не спрашивать подтверждение перед удалением")
 ):
-	"""Очищает базу данных"""
+	"""
+	Очищает базу данных.
+	По умолчанию запрашивает подтверждение перед удалением.
+	"""
 	params = get_common_cli_params(year=year)
 
-	msg = "полностью очистить базу данных" if full_clean else f"удалить данные за {params['year']} год"
+	# Определяем сообщение для подтверждения
+	if full_clean:
+		msg = (
+			"❌ ВНИМАНИЕ! Вы собираетесь полностью очистить базу данных.\n"
+			"Все документы и связанные таблицы будут удалены.\n"
+			"Вы уверены, что хотите продолжить?"
+		)
+	else:
+		msg = f"❌ Вы уверены, что хотите удалить данные за {params['year']} год?"
 
-	if not confirm or full_clean and confirm_prompt(f"❌ Вы уверены что хотите {msg}?", default=False):
+	# Запрашиваем подтверждение, если не отключено
+	if no_confirm or confirm_prompt(msg, default=False):
 		with next(get_db()) as db:
 			if full_clean:
 				deleted_count = delete_all_documents(db)
+				console.print(f"✅ Удалено документов: {deleted_count}")
 			else:
 				deleted_count = delete_documents_by_year(db, params['year'])
-
-			console.print(f"✅ Удалено документов: {deleted_count}")
+				console.print(f"✅ Удалено документов за {params['year']} год: {deleted_count}")
 	else:
-		print_warning("Очистка отменена")
+		print_warning("❌ Операция отменена пользователем")
 
 
 if __name__ == "__main__":

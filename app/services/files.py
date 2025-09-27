@@ -1,25 +1,11 @@
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Optional
 
 from app.config import settings
-from app.utils.base import is_supported
+from app.utils.base import get_current_year, is_supported
+from app.utils.files import find_files
+from app.utils.tables import extract_from_pdf, extract_from_docx, extract_from_txt
 from app.utils.console import print_success, print_error, console
-
-
-def find_files(directory: Path, limit: int = 0) -> list[Path]:
-	"""Находит файлы в указанной директории с поддержкой форматов"""
-	files = []
-
-	for ext in settings.SUPPORTED_FORMATS:
-		pattern = f"**/*{ext}"
-		found = list(directory.glob(pattern))
-		files.extend(found)
-
-	files = [f for f in files if is_supported(f)]
-
-	if limit > 0:
-		return files[:limit]
-	return files
 
 
 def display_files_tree(source: Path, max_display: int = settings.CONSOLE_OUTPUT_BATCH_SIZE) -> list[Path]:
@@ -39,3 +25,43 @@ def display_files_tree(source: Path, max_display: int = settings.CONSOLE_OUTPUT_
 
 	print_success(f"Обнаружено файлов: [cyan]{len(files)}[/cyan]\n")
 	return files
+
+
+def convert_file_to_text(file_path: Path, year: int = None) -> tuple[str, Optional[list[list[list[str]]]]]:
+	"""
+	Извлекает текст и таблицы из файла, фильтрует по году и приводит к виду:
+	[[MM.YYYY, сумма], ...]
+
+	Args:
+		file_path: Путь к файлу
+		year: Год для фильтрации строк
+
+	Returns:
+		tuple:
+			- text_content (str): весь текст документа
+			- results (list[list[str]] | None): список рядов вида [дата, сумма]
+	"""
+	if not file_path.exists():
+		print(f"Файл не найден: {file_path} [игнорируем]")
+		return "", None
+
+	if not is_supported(file_path):
+		print(f"Неподдерживаемый формат файла: {file_path} [игнорируем]")
+		return "", None
+
+	file_ext = file_path.suffix.lower()
+
+	if not year:
+		year = get_current_year()
+
+	try:
+		if file_ext == ".pdf":
+			return extract_from_pdf(file_path, year)
+		elif file_ext in [".docx", ".doc"]:
+			return extract_from_docx(file_path, year)
+		elif file_ext == ".txt":
+			return extract_from_txt(file_path, year)
+		else:
+			raise ValueError(f"Неподдерживаемый формат файла: {file_ext}")
+	except Exception as e:
+		raise Exception(f"Ошибка извлечения данных из {file_path.name}: {e}")

@@ -1,9 +1,12 @@
+pathlib
+python-dateutil
 pydantic
 pydantic-settings
 sqlmodel
 pdfplumber
 python-docx
 openpyxl
+python-slugify
 typer
 rich
 questionary
