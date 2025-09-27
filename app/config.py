@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
 	# File handling
 	SUPPORTED_FORMATS: list[str] = [".docx", ".doc", ".pdf", ".txt"]
+	BATCH_FLUSH_SIZE: int = 100
 	MAX_FILES_TO_PROCESS: int = 0
 	CONSOLE_OUTPUT_BATCH_SIZE: int = 5
 	REWRITE_FILE_ON_CONFLICT: bool = False
