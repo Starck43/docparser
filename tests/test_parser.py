@@ -7,12 +7,13 @@ from pathlib import Path
 
 from app import crud
 from app.config import settings
-from app.crud import get_documents_with_grouped_plans
 from app.db import init_db, get_db
 from app.services.export import export_plans_to_xls
 from app.services.files import display_files_tree, convert_file_to_text
 from app.services.parser import DocumentParser
-from app.services.preview import preview_document_info, preview_document_plans, paginated_preview, preview_documents_details
+from app.services.preview import (
+	preview_document_info, preview_document_plans, paginated_preview, preview_documents_details
+)
 from app.services.tables import print_formatted_table
 from app.utils.base import get_current_year, format_string_list
 from app.utils.console import console, print_error

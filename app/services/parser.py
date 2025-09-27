@@ -100,13 +100,6 @@ def main_file_parser(
 
 
 class DocumentParser:
-	def __init__(self):
-		self.month_map = {
-			'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4,
-			'мая': 5, 'июня': 6, 'июля': 7, 'августа': 8,
-			'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
-		}
-
 	def parse_document(
 			self,
 			src: str,

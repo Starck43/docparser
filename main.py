@@ -1,12 +1,10 @@
 from app.config import settings
-from app.crud import get_documents, get_documents_with_grouped_plans
-from app.db import get_db
-from app.services.export import export_plans_to_xls, export_documents_to_file
+from app.services.export import export_documents_to_file
 from app.services.files import display_files_tree
 from app.services.parser import main_file_parser
 from app.services.preview import paginated_preview, preview_documents_details
 from app.utils.base import get_current_year
-from app.utils.console import (confirm_prompt, console, print_success, print_warning, select_directory, print_error)
+from app.utils.console import confirm_prompt, console, print_warning, select_directory
 
 try:
 	import questionary
