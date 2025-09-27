@@ -99,17 +99,12 @@ def get_unique_filename(
 		counter += 1
 
 
-def find_files(directory: Path, limit: int = 0) -> list[Path]:
-	"""Находит файлы в указанной директории с поддержкой форматов"""
-	files = []
+def find_files(directory: Path) -> list[Path]:
+	"""Находит и возвращает все файлы поддерживаемых форматов"""
+	files: list[Path] = []
 
 	for ext in settings.SUPPORTED_FORMATS:
-		pattern = f"**/*{ext}"
-		found = list(directory.glob(pattern))
-		files.extend(found)
+		files.extend(directory.glob(f"**/*{ext}"))
 
-	files = [f for f in files if is_supported(f)]
-
-	if limit > 0:
-		return files[:limit]
-	return files
+	# Фильтрация и сортировка для стабильного результата
+	return sorted([f for f in files if is_supported(f)])

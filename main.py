@@ -1,10 +1,11 @@
 from app.config import settings
+from app.core.pipeline import parse_files_pipeline
 from app.services.export import export_documents_to_file
 from app.services.files import display_files_tree
-from app.services.parser import main_file_parser
 from app.services.preview import paginated_preview, preview_documents_details
 from app.utils.base import get_current_year
-from app.utils.console import confirm_prompt, console, print_warning, select_directory
+from app.utils.console import confirm_prompt, console, print_warning, select_directory, print_error
+from app.utils.files import find_files
 
 try:
 	import questionary
@@ -26,14 +27,17 @@ def run_parsing() -> int:
 	if not data_dir:
 		return 0
 
-	files = display_files_tree(data_dir)
+	files = find_files(data_dir)
 	if not files:
+		print_error("Файлы не найдены")
 		return 0
+
+	files = display_files_tree(files)
 
 	if not confirm_prompt("Начать парсинг файлов?", default=True):
 		return 0
 
-	return main_file_parser(files, year=get_current_year())
+	return parse_files_pipeline(files, year=get_current_year())
 
 
 def run_preview():

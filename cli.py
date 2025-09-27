@@ -4,16 +4,17 @@ from typing import Optional
 import typer
 
 from app.config import settings
+from app.core.pipeline import parse_files_pipeline
 from app.crud import (
 	get_documents_count, delete_all_documents, delete_documents_by_year, get_documents_with_errors
 )
 from app.db import get_db
 from app.services.export import export_documents_to_file
 from app.services.files import display_files_tree
-from app.services.parser import main_file_parser
 from app.services.preview import paginated_preview, preview_documents_details
 from app.utils.base import format_string_list, parse_range_string, get_current_year
 from app.utils.console import confirm_prompt, console, print_error, print_success, print_warning, print_table
+from app.utils.files import find_files
 
 app = typer.Typer(help="📄 CLI команды для гибкой работы с данными")
 
@@ -46,9 +47,10 @@ def parse(
 			help=f"Папка с исходными документами (по умолчанию: {settings.DATA_DIR})"
 		),
 		year: Optional[int] = typer.Option(None, help="Год для выборки данных (по умолчанию: текущий)"),
-		limit: int = typer.Option(
+		range_str: str = typer.Option(
 			None,
-			help=f"Лимит файлов для обработки (по умолчанию: {settings.MAX_FILES_TO_PROCESS or 'нет'})"
+			"--range",
+			help=f"Диапазон: 1-100, 50-, 0:100, :200, 100: (по умолчанию: {settings.MAX_FILES_TO_PROCESS or 'нет'})"
 		),
 		dry_run: bool = typer.Option(False, help="Тестовый режим без сохранения в БД"),
 		batch_size: int = typer.Option(
@@ -65,18 +67,48 @@ def parse(
 ):
 	"""Парсит документы из указанной папки"""
 
-	params = get_common_cli_params(year=year, limit=limit, batch_size=batch_size, force_update=force_update)
+	params = get_common_cli_params(
+		year=year,
+		range_str=range_str,
+		batch_size=batch_size,
+		force_update=force_update
+	)
 
-	files = display_files_tree(data_dir, max_display=params['batch_size'])
-	if not files:
+	# Находим все файлы
+	files = find_files(data_dir)
+	total = len(files)
+	if not total:
+		print_error("Файлы не найдены")
 		return
+
+	max_total = settings.MAX_FILES_TO_PROCESS or total
+	if total > max_total:
+		total = max_total
+
+	try:
+		offset, limit = parse_range_string(params['range_str'], total=total)
+	except ValueError as e:
+		print_error(str(e))
+		return
+
+	if offset is None:
+		offset = 0
+	if limit is None:
+		# Если в настройках MAX_FILES_TO_PROCESS = 0 → берём все
+		limit = settings.MAX_FILES_TO_PROCESS or total
+
+	# Корректируем лимит (не больше, чем общее количество файлов)
+	limit = min(limit, total - offset)
+
+	# Отображаем дерево файлов
+	selected_files = display_files_tree(files, max_display=params['batch_size'], offset=offset, limit=limit)
 
 	if dry_run:
 		print_warning("*** РЕЖИМ ПАРСИНГА БЕЗ СОХРАНЕНИЯ В БД ***")
 
 	if confirm_prompt("Продолжить парсинг?", default=True):
-		main_file_parser(
-			files[:params['limit'] or None],
+		parse_files_pipeline(
+			selected_files,
 			params['year'],
 			not dry_run,
 			update_mode=params['force_update'],

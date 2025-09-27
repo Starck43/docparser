@@ -17,6 +17,7 @@ from app.services.preview import (
 from app.services.tables import print_formatted_table
 from app.utils.base import get_current_year, format_string_list
 from app.utils.console import console, print_error
+from app.utils.files import find_files
 
 
 def step1_find_files():
@@ -25,7 +26,12 @@ def step1_find_files():
 	print("🔍 ШАГ 1: Поиск файлов в папке данных")
 	print("=" * 60)
 
-	return display_files_tree(settings.DATA_DIR)
+	files = find_files(settings.DATA_DIR)
+	if not files:
+		print_error("Файлы не найдены")
+		return
+
+	return display_files_tree(files)
 
 
 def step2_convert_to_text(files):
@@ -242,8 +248,8 @@ def step8_export_to_xls():
 		return
 
 	with next(get_db()) as db:
-		# Получаем документы с планами (используем обычный get_documents)
-		documents = crud.get_documents(db, year=year)
+		# Получаем документы с планами
+		documents = crud.get_documents_with_grouped_plans(db, year=year)
 
 		# Вызываем функцию экспорта
 		export_file_path = export_plans_to_xls(list(documents), year)

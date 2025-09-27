@@ -3,28 +3,37 @@ from typing import Optional
 
 from app.config import settings
 from app.utils.base import get_current_year, is_supported
-from app.utils.files import find_files
-from app.utils.tables import extract_from_pdf, extract_from_docx, extract_from_txt
 from app.utils.console import print_success, print_error, console
+from app.utils.tables import extract_from_pdf, extract_from_docx, extract_from_txt
 
 
-def display_files_tree(source: Path, max_display: int = settings.CONSOLE_OUTPUT_BATCH_SIZE) -> list[Path]:
+def display_files_tree(
+		files: list[Path],
+		max_display: int = settings.CONSOLE_OUTPUT_BATCH_SIZE,
+		offset: int = 0,
+		limit: int | None = None,
+) -> list[Path]:
 	"""Отображает дерево файлов и возвращает список найденных файлов"""
-	files = find_files(source)
 
 	if not files:
 		print_error("Файлы не найдены")
 		return []
 
-	console.print(f"\n📁 {source.name.upper()}/", style="bold")
-	for i, file in enumerate(files[:max_display], 1):
+	# Применяем диапазон
+	if limit is None:
+		selected = files[offset:]
+	else:
+		selected = files[offset:offset + limit]
+
+	console.print(f"\n📁 {files[0].parent.name.upper()}/", style="bold")
+	for i, file in enumerate(selected[:max_display], 1):
 		console.print(f"├── 📄 [gray]{file.name}[/gray]")
 
-	if len(files) > max_display:
-		console.print(f"└── ... и еще [gray]{len(files) - max_display}[/gray] файлов")
+	if len(selected) > max_display:
+		console.print(f"└── ... и еще [gray]{len(selected) - max_display}[/gray] файлов")
 
-	print_success(f"Обнаружено файлов: [cyan]{len(files)}[/cyan]\n")
-	return files
+	print_success(f"Обнаружено файлов для обработки: [cyan]{len(selected)}[/cyan]\n")
+	return selected
 
 
 def convert_file_to_text(file_path: Path, year: int = None) -> tuple[str, Optional[list[list[list[str]]]]]:
